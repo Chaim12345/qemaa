@@ -12,12 +12,16 @@ object NativeBinaryExtractor {
   data class QemuBinaries(
     val systemBinary: String,
     val imgBinary: String,
-    val baseDir: String
+    val baseDir: String,
+    val libDir: String
   )
 
   fun ensureBinariesExtracted(context: Context): QemuBinaries {
     val qemuDir = File(context.filesDir, QEMU_DIRNAME)
     if (!qemuDir.exists()) qemuDir.mkdirs()
+
+    val libDir = File(qemuDir, "lib")
+    if (!libDir.exists()) libDir.mkdirs()
 
     val systemArch = detectAndroidAbi()
     val qemuArch = mapToQemuArch(systemArch)
@@ -52,13 +56,23 @@ object NativeBinaryExtractor {
       }
     }
 
+    // Extract shared libraries
+    val soFiles = assetList.filter { it.endsWith(".so") || it.contains(".so.") }
+    for (soFile in soFiles) {
+      val destFile = File(libDir, soFile)
+      if (!destFile.exists()) {
+        extractAsset(context, "$QEMU_ASSETS_DIR/$soFile", destFile)
+      }
+    }
+
     if (systemBinary.exists()) systemBinary.setExecutable(true, true)
     if (imgBinary.exists()) imgBinary.setExecutable(true, true)
 
     return QemuBinaries(
       systemBinary = systemBinary.absolutePath,
       imgBinary = imgBinary.absolutePath,
-      baseDir = qemuDir.absolutePath
+      baseDir = qemuDir.absolutePath,
+      libDir = libDir.absolutePath
     )
   }
 

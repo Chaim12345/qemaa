@@ -49,6 +49,11 @@ class QemuRunner(
       env["HOME"] = binaries.baseDir
       env["TMPDIR"] = binaries.baseDir
       env["QEMU_AUDIO_DRV"] = "none"
+      
+      // Set library path for Termux shared libraries
+      if (binaries.libDir.isNotEmpty()) {
+        env["LD_LIBRARY_PATH"] = binaries.libDir
+      }
 
       pb.redirectErrorStream(false)
       qemuProcess = pb.start()
