@@ -23,6 +23,8 @@ data class VirtualizationReport(
   val androidRelease: String,
   val deviceModel: String,
   val isHypervisorSupported: Boolean,
+  val hasQemuBinary: Boolean,
+  val qemuBinaryPath: String,
   val recommendations: List<String>
 )
 
@@ -80,7 +82,13 @@ object VirtualizationDetector {
     val cpuCores = Runtime.getRuntime().availableProcessors()
     val hostArch = Build.SUPPORTED_ABIS.firstOrNull() ?: System.getProperty("os.arch") ?: "unknown"
 
-    // 6. Hypervisor properties
+    // 6. Check for QEMU binaries in app assets/files
+    val hasQemuBinary = NativeBinaryExtractor.isQemuAvailable(context)
+    val qemuBinaries = if (hasQemuBinary) {
+      NativeBinaryExtractor.ensureBinariesExtracted(context)
+    } else null
+
+    // 7. Hypervisor properties
     val hypervisorProp = getSystemProperty("ro.boot.hypervisor.version")
     val vmSupportedProp = getSystemProperty("ro.virtual_machine.supported")
     val isHyp = hypervisorProp.isNotBlank() || vmSupportedProp == "true" || hasKvm
@@ -92,6 +100,12 @@ object VirtualizationDetector {
       recommendations.add("⚠ /dev/kvm node exists but is restricted by Android SELinux. App uses Native Linux Host Shell & QEMU TCG.")
     } else {
       recommendations.add("ℹ Running on standard Android Linux kernel with Native Process Engine & multi-arch QEMU JNI/TCG.")
+    }
+
+    if (hasQemuBinary) {
+      recommendations.add("✓ QEMU binary detected at ${qemuBinaries?.baseDir ?: "app files"} - Real VM hardware emulation enabled.")
+    } else {
+      recommendations.add("ℹ QEMU binaries not found. Place qemu-system-* and qemu-img in assets/nativebin/ for real VM execution.")
     }
 
     if (Build.VERSION.SDK_INT >= 33) {
@@ -117,6 +131,8 @@ object VirtualizationDetector {
       androidRelease = Build.VERSION.RELEASE ?: "Unknown",
       deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
       isHypervisorSupported = isHyp,
+      hasQemuBinary = hasQemuBinary,
+      qemuBinaryPath = qemuBinaries?.systemBinary ?: "Not found",
       recommendations = recommendations
     )
   }

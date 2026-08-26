@@ -272,12 +272,17 @@ fun VirtualizationReportDialog(
               if (report.hasKvmDevice) "Present (${if (report.isKvmWritable) "Read/Write" else "SELinux Restricted"})" else "Not exposed in userland sandbox",
               color = if (report.hasKvmDevice && report.isKvmWritable) SecondaryEmerald else TerminalYellow
             )
-            ReportRow(
+             ReportRow(
               "Root / SU Privileges",
               if (report.hasRootAccess) "Available (${report.rootMethod})" else "Standard App Sandbox (No Root)",
               color = if (report.hasRootAccess) SecondaryEmerald else TerminalDimText
             )
             ReportRow("AVF Subsystem", report.avfDetails)
+            ReportRow(
+              "QEMU Binary",
+              if (report.hasQemuBinary) "Available (${report.qemuBinaryPath.takeLast(40)})" else "Not found - using simulated mode",
+              color = if (report.hasQemuBinary) SecondaryEmerald else TerminalYellow
+            )
           }
         }
 
