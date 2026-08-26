@@ -128,6 +128,7 @@ fun TerminalScreen(
   onOpenVirtualizationReport: () -> Unit
 ) {
   val listState = rememberLazyListState()
+  var useXtermEmulator by remember { mutableStateOf(true) }
 
   LaunchedEffect(terminalLines.size) {
     if (terminalLines.isNotEmpty()) {
@@ -154,6 +155,8 @@ fun TerminalScreen(
       activeVm = activeVm,
       telemetry = telemetry,
       engineMode = engineMode,
+      useXtermEmulator = useXtermEmulator,
+      onToggleXtermEmulator = { useXtermEmulator = !useXtermEmulator },
       onStartVm = onStartVm,
       onPauseVm = onPauseVm,
       onResumeVm = onResumeVm,
@@ -208,199 +211,220 @@ fun TerminalScreen(
       }
     }
 
-    // Terminal Screen Canvas
-    Box(
-      modifier = Modifier
-        .weight(1f)
-        .fillMaxWidth()
-        .background(TerminalBlack)
-        .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-      if (terminalLines.isEmpty()) {
-        Column(
-          modifier = Modifier.align(Alignment.Center),
-          horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-          Text(
-            text = "QEMU Virtual Console Ready",
-            color = TerminalGreen,
-            fontFamily = TerminalFontFamily,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold
-          )
-          Spacer(modifier = Modifier.height(6.dp))
-          Text(
-            text = if (activeVm?.status == VmStatus.RUNNING.name) {
-              "Linux kernel ready. Enter commands below."
-            } else {
-              "Virtual machine is ${activeVm?.status ?: "STOPPED"}.\nTap the 'Start' button above to boot Linux."
-            },
-            color = TerminalDimText,
-            fontFamily = TerminalFontFamily,
-            fontSize = 12.sp,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-          )
-        }
-      } else {
-        LazyColumn(
-          state = listState,
-          modifier = Modifier.fillMaxSize(),
-          contentPadding = PaddingValues(vertical = 4.dp)
-        ) {
-          items(terminalLines) { line ->
+    if (useXtermEmulator) {
+      // Interactive Xterm.js Terminal Emulator View
+      XtermTerminalView(
+        terminalLines = terminalLines,
+        activePrompt = activePrompt,
+        terminalInput = terminalInput,
+        fontSizeSp = fontSizeSp,
+        onInputChange = onInputChange,
+        onSendCommand = onSendCommand,
+        onClearTerminal = onClearTerminal,
+        onIncreaseFontSize = onIncreaseFontSize,
+        onDecreaseFontSize = onDecreaseFontSize,
+        onKeyTab = onKeyTab,
+        onKeyCtrlC = onKeyCtrlC,
+        onKeyHistoryPrev = onKeyHistoryPrev,
+        onKeyHistoryNext = onKeyHistoryNext,
+        onInsertText = onKeyInsert,
+        modifier = Modifier.weight(1f)
+      )
+    } else {
+      // Classic Compose Terminal Screen Canvas
+      Box(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxWidth()
+          .background(TerminalBlack)
+          .padding(horizontal = 10.dp, vertical = 8.dp)
+      ) {
+        if (terminalLines.isEmpty()) {
+          Column(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally
+          ) {
             Text(
-              text = line.text,
-              color = line.color,
+              text = "QEMU Virtual Console Ready",
+              color = TerminalGreen,
               fontFamily = TerminalFontFamily,
-              fontSize = fontSizeSp.sp,
-              lineHeight = (fontSizeSp + 4).sp,
-              fontWeight = if (line.isPrompt || line.isSystem) FontWeight.Bold else FontWeight.Normal
+              fontSize = 16.sp,
+              fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              text = if (activeVm?.status == VmStatus.RUNNING.name) {
+                "Linux kernel ready. Enter commands below."
+              } else {
+                "Virtual machine is ${activeVm?.status ?: "STOPPED"}.\nTap the 'Start' button above to boot Linux."
+              },
+              color = TerminalDimText,
+              fontFamily = TerminalFontFamily,
+              fontSize = 12.sp,
+              textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
           }
+        } else {
+          LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 4.dp)
+          ) {
+            items(terminalLines) { line ->
+              Text(
+                text = line.text,
+                color = line.color,
+                fontFamily = TerminalFontFamily,
+                fontSize = fontSizeSp.sp,
+                lineHeight = (fontSizeSp + 4).sp,
+                fontWeight = if (line.isPrompt || line.isSystem) FontWeight.Bold else FontWeight.Normal
+              )
+            }
 
-          // Live prompt line with blinking cursor
-          val isPromptActive = engineMode == EngineMode.REAL_NATIVE_HOST || activeVm?.status == VmStatus.RUNNING.name
-          if (isPromptActive) {
-            item {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                  text = "$activePrompt$terminalInput",
-                  color = if (engineMode == EngineMode.REAL_NATIVE_HOST) SecondaryEmerald else TerminalGreen,
-                  fontFamily = TerminalFontFamily,
-                  fontSize = fontSizeSp.sp,
-                  lineHeight = (fontSizeSp + 4).sp,
-                  fontWeight = FontWeight.Bold
-                )
-                if (cursorVisible) {
-                  Box(
-                    modifier = Modifier
-                      .width(8.dp)
-                      .height((fontSizeSp + 2).dp)
-                      .background(if (engineMode == EngineMode.REAL_NATIVE_HOST) SecondaryEmerald else TerminalGreen)
+            // Live prompt line with blinking cursor
+            val isPromptActive = engineMode == EngineMode.REAL_NATIVE_HOST || activeVm?.status == VmStatus.RUNNING.name
+            if (isPromptActive) {
+              item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Text(
+                    text = "$activePrompt$terminalInput",
+                    color = if (engineMode == EngineMode.REAL_NATIVE_HOST) SecondaryEmerald else TerminalGreen,
+                    fontFamily = TerminalFontFamily,
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = (fontSizeSp + 4).sp,
+                    fontWeight = FontWeight.Bold
                   )
+                  if (cursorVisible) {
+                    Box(
+                      modifier = Modifier
+                        .width(8.dp)
+                        .height((fontSizeSp + 2).dp)
+                        .background(if (engineMode == EngineMode.REAL_NATIVE_HOST) SecondaryEmerald else TerminalGreen)
+                    )
+                  }
                 }
               }
             }
           }
         }
       }
-    }
 
-    // Quick Command Helper Chips
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(CyberSurface)
-        .horizontalScroll(rememberScrollState())
-        .padding(horizontal = 8.dp, vertical = 4.dp),
-      horizontalArrangement = Arrangement.spacedBy(6.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      QuickChip(label = "neofetch") { onSendCommand("neofetch") }
-      QuickChip(label = "apk update") { onSendCommand("apk update") }
-      QuickChip(label = "apk add git") { onSendCommand("apk add git") }
-      QuickChip(label = "rc-service sshd") { onSendCommand("rc-service sshd status") }
-      QuickChip(label = "lbu commit") { onSendCommand("lbu commit") }
-      QuickChip(label = "setup-alpine") { onSendCommand("setup-alpine") }
-      QuickChip(label = "info cpus") { onSendCommand("info cpus") }
-      QuickChip(label = "info block") { onSendCommand("info block") }
-      QuickChip(label = "info kvm") { onSendCommand("info kvm") }
-      QuickChip(label = "ssh info") { onSendCommand("ssh") }
-      QuickChip(label = "top") { onSendCommand("top") }
-      QuickChip(label = "ls -la") { onSendCommand("ls -la") }
-      QuickChip(label = "df -h") { onSendCommand("df -h") }
-      QuickChip(label = "free -m") { onSendCommand("free -m") }
-      QuickChip(label = "ip a") { onSendCommand("ip a") }
-      QuickChip(label = "curl") { onSendCommand("curl https://api.github.com") }
-      QuickChip(label = "uname -a") { onSendCommand("uname -a") }
-      QuickChip(label = "nano") { onSendCommand("nano welcome.txt") }
-      QuickChip(label = "python3") { onSendCommand("python3 -c \"print('Hello Python!')\"") }
-      QuickChip(label = "go run") { onSendCommand("go run main.go") }
-      QuickChip(label = "cargo run") { onSendCommand("cargo run") }
-      QuickChip(label = "node -e") { onSendCommand("node -e \"console.log('Hello Node.js!')\"") }
-      QuickChip(label = "gcc -v") { onSendCommand("gcc -v") }
-      QuickChip(label = "help") { onSendCommand("help") }
-    }
-
-    // Touch Keyboard Accessory Toolbar (ESC, TAB, CTRL, ALT, |, /, -, ~, Up, Down, Clear, Font +/-)
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(CyberSurfaceVariant)
-        .horizontalScroll(rememberScrollState())
-        .padding(horizontal = 6.dp, vertical = 4.dp),
-      horizontalArrangement = Arrangement.spacedBy(4.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      TouchKey(label = "ESC") { onKeyInsert("") }
-      TouchKey(label = "TAB", isAccent = true) { onKeyTab() }
-      TouchKey(label = "^C", isRed = true) { onKeyCtrlC() }
-      TouchKey(label = "|") { onKeyInsert("| ") }
-      TouchKey(label = "/") { onKeyInsert("/") }
-      TouchKey(label = "-") { onKeyInsert("-") }
-      TouchKey(label = "~") { onKeyInsert("~") }
-      TouchKey(label = ">") { onKeyInsert(" > ") }
-      TouchKey(label = "&&") { onKeyInsert(" && ") }
-      TouchKey(label = "↑") { onKeyHistoryPrev() }
-      TouchKey(label = "↓") { onKeyHistoryNext() }
-      TouchKey(label = "CLR") { onClearTerminal() }
-      TouchKey(label = "A+") { onIncreaseFontSize() }
-      TouchKey(label = "A-") { onDecreaseFontSize() }
-    }
-
-    // Command Input Row
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(CyberSurface)
-        .padding(horizontal = 8.dp, vertical = 6.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      OutlinedTextField(
-        value = terminalInput,
-        onValueChange = onInputChange,
-        modifier = Modifier.weight(1f),
-        placeholder = {
-          Text(
-            "Enter Linux command...",
-            color = TerminalDimText,
-            fontFamily = TerminalFontFamily,
-            fontSize = 13.sp
-          )
-        },
-        textStyle = TextStyle(
-          fontFamily = TerminalFontFamily,
-          fontSize = 13.sp,
-          color = TerminalWhite
-        ),
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-        keyboardActions = KeyboardActions(onSend = { onSendCommand(null) }),
-        colors = OutlinedTextFieldDefaults.colors(
-          focusedBorderColor = PrimaryCyan,
-          unfocusedBorderColor = CyberBorder,
-          focusedContainerColor = TerminalBlack,
-          unfocusedContainerColor = TerminalBlack
-        ),
-        shape = RoundedCornerShape(8.dp)
-      )
-
-      Spacer(modifier = Modifier.width(6.dp))
-
-      Button(
-        onClick = { onSendCommand(null) },
-        colors = ButtonDefaults.buttonColors(
-          containerColor = SecondaryEmerald,
-          contentColor = TerminalBlack
-        ),
-        shape = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+      // Quick Command Helper Chips
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(CyberSurface)
+          .horizontalScroll(rememberScrollState())
+          .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Icon(
-          imageVector = Icons.Default.Send,
-          contentDescription = "Execute Command",
-          modifier = Modifier.size(18.dp)
+        QuickChip(label = "neofetch") { onSendCommand("neofetch") }
+        QuickChip(label = "apk update") { onSendCommand("apk update") }
+        QuickChip(label = "apk add git") { onSendCommand("apk add git") }
+        QuickChip(label = "rc-service sshd") { onSendCommand("rc-service sshd status") }
+        QuickChip(label = "lbu commit") { onSendCommand("lbu commit") }
+        QuickChip(label = "setup-alpine") { onSendCommand("setup-alpine") }
+        QuickChip(label = "info cpus") { onSendCommand("info cpus") }
+        QuickChip(label = "info block") { onSendCommand("info block") }
+        QuickChip(label = "info kvm") { onSendCommand("info kvm") }
+        QuickChip(label = "ssh info") { onSendCommand("ssh") }
+        QuickChip(label = "top") { onSendCommand("top") }
+        QuickChip(label = "ls -la") { onSendCommand("ls -la") }
+        QuickChip(label = "df -h") { onSendCommand("df -h") }
+        QuickChip(label = "free -m") { onSendCommand("free -m") }
+        QuickChip(label = "ip a") { onSendCommand("ip a") }
+        QuickChip(label = "curl") { onSendCommand("curl https://api.github.com") }
+        QuickChip(label = "uname -a") { onSendCommand("uname -a") }
+        QuickChip(label = "nano") { onSendCommand("nano welcome.txt") }
+        QuickChip(label = "python3") { onSendCommand("python3 -c \"print('Hello Python!')\"") }
+        QuickChip(label = "go run") { onSendCommand("go run main.go") }
+        QuickChip(label = "cargo run") { onSendCommand("cargo run") }
+        QuickChip(label = "node -e") { onSendCommand("node -e \"console.log('Hello Node.js!')\"") }
+        QuickChip(label = "gcc -v") { onSendCommand("gcc -v") }
+        QuickChip(label = "help") { onSendCommand("help") }
+      }
+
+      // Touch Keyboard Accessory Toolbar (ESC, TAB, CTRL, ALT, |, /, -, ~, Up, Down, Clear, Font +/-)
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(CyberSurfaceVariant)
+          .horizontalScroll(rememberScrollState())
+          .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        TouchKey(label = "ESC") { onKeyInsert("") }
+        TouchKey(label = "TAB", isAccent = true) { onKeyTab() }
+        TouchKey(label = "^C", isRed = true) { onKeyCtrlC() }
+        TouchKey(label = "|") { onKeyInsert("| ") }
+        TouchKey(label = "/") { onKeyInsert("/") }
+        TouchKey(label = "-") { onKeyInsert("-") }
+        TouchKey(label = "~") { onKeyInsert("~") }
+        TouchKey(label = ">") { onKeyInsert(" > ") }
+        TouchKey(label = "&&") { onKeyInsert(" && ") }
+        TouchKey(label = "↑") { onKeyHistoryPrev() }
+        TouchKey(label = "↓") { onKeyHistoryNext() }
+        TouchKey(label = "CLR") { onClearTerminal() }
+        TouchKey(label = "A+") { onIncreaseFontSize() }
+        TouchKey(label = "A-") { onDecreaseFontSize() }
+      }
+
+      // Command Input Row
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(CyberSurface)
+          .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        OutlinedTextField(
+          value = terminalInput,
+          onValueChange = onInputChange,
+          modifier = Modifier.weight(1f),
+          placeholder = {
+            Text(
+              "Enter Linux command...",
+              color = TerminalDimText,
+              fontFamily = TerminalFontFamily,
+              fontSize = 13.sp
+            )
+          },
+          textStyle = TextStyle(
+            fontFamily = TerminalFontFamily,
+            fontSize = 13.sp,
+            color = TerminalWhite
+          ),
+          singleLine = true,
+          keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+          keyboardActions = KeyboardActions(onSend = { onSendCommand(null) }),
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = PrimaryCyan,
+            unfocusedBorderColor = CyberBorder,
+            focusedContainerColor = TerminalBlack,
+            unfocusedContainerColor = TerminalBlack
+          ),
+          shape = RoundedCornerShape(8.dp)
         )
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        Button(
+          onClick = { onSendCommand(null) },
+          colors = ButtonDefaults.buttonColors(
+            containerColor = SecondaryEmerald,
+            contentColor = TerminalBlack
+          ),
+          shape = RoundedCornerShape(8.dp),
+          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Default.Send,
+            contentDescription = "Execute Command",
+            modifier = Modifier.size(18.dp)
+          )
+        }
       }
     }
   }
@@ -411,6 +435,8 @@ private fun VmControlHeader(
   activeVm: VirtualMachineEntity?,
   telemetry: TelemetryMetrics,
   engineMode: EngineMode,
+  useXtermEmulator: Boolean,
+  onToggleXtermEmulator: () -> Unit,
   onStartVm: () -> Unit,
   onPauseVm: () -> Unit,
   onResumeVm: () -> Unit,
@@ -476,6 +502,24 @@ private fun VmControlHeader(
                 Text(
                   text = engineMode.badge,
                   color = if (engineMode == EngineMode.REAL_NATIVE_HOST) SecondaryEmerald else PrimaryCyan,
+                  fontSize = 9.sp,
+                  fontWeight = FontWeight.Bold,
+                  fontFamily = TerminalFontFamily
+                )
+              }
+              Spacer(modifier = Modifier.width(4.dp))
+              // Xterm.js / Classic Toggle Badge
+              Box(
+                modifier = Modifier
+                  .clip(RoundedCornerShape(4.dp))
+                  .background(if (useXtermEmulator) PrimaryCyan.copy(alpha = 0.18f) else CyberBorder)
+                  .border(1.dp, if (useXtermEmulator) PrimaryCyan else CyberBorder, RoundedCornerShape(4.dp))
+                  .clickable(onClick = onToggleXtermEmulator)
+                  .padding(horizontal = 4.dp, vertical = 2.dp)
+              ) {
+                Text(
+                  text = if (useXtermEmulator) "xterm.js" else "Classic",
+                  color = if (useXtermEmulator) PrimaryCyan else TerminalDimText,
                   fontSize = 9.sp,
                   fontWeight = FontWeight.Bold,
                   fontFamily = TerminalFontFamily
