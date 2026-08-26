@@ -1,0 +1,6 @@
+{
+  "name": "Linux VM",
+  "description": "Full Linux Virtual Machine manager and integrated terminal emulator with one-click distro installation and QEMU configuration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
