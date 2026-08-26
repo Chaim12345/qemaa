@@ -46,7 +46,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Button
@@ -718,7 +718,7 @@ fun XtermTerminalView(
               modifier = Modifier.testTag("terminal_send_button")
             ) {
               Icon(
-                imageVector = Icons.Default.Send,
+                imageVector = Icons.AutoMirrored.Filled.Send,
                 contentDescription = "Execute Command",
                 modifier = Modifier.size(18.dp)
               )
