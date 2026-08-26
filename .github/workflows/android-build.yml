@@ -43,9 +43,15 @@ jobs:
           fi
 
           # Decode debug keystore if base64 file is present
-          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
-            base64 -d debug.keystore.base64 > debug.keystore || true
+          if [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null || base64 --decode debug.keystore.base64 > debug.keystore 2>/dev/null || true
           fi
+
+          # If debug.keystore still does not exist, generate one using keytool
+          if [ ! -f debug.keystore ] || [ ! -s debug.keystore ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          ls -la debug.keystore
 
       - name: Ensure Gradle Wrapper
         run: |
@@ -56,13 +62,13 @@ jobs:
             chmod +x gradlew
           fi
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Build Fast Release APK
+        run: ./gradlew assembleRelease --no-daemon --parallel --build-cache --stacktrace
 
-      - name: Upload Debug APK Artifact
+      - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-vm-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: linux-vm-release-apk
+          path: app/build/outputs/apk/release/*.apk
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
