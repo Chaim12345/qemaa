@@ -1,6 +1,7 @@
 package com.example.engine
 
 import android.content.Context
+import android.util.Log
 import androidx.compose.ui.graphics.Color
 import com.example.data.model.DistroCatalog
 import com.example.data.model.DistroTemplate
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 enum class EngineMode(val title: String, val badge: String) {
@@ -63,10 +65,26 @@ class VmManagerService(
 
   private var shellEngine: LinuxShellEngine? = null
   private val realNativeEngine = RealNativeProcessEngine(context)
+  private var realQemuEngine: RealQemuEngine? = null
+  private val qemuBinaryBundler = QemuBinaryBundler(context)
   private var telemetryJob: Job? = null
   private var bootJob: Job? = null
 
   init {
+    // Extract bundled QEMU binaries on initialization
+    scope.launch(Dispatchers.IO) {
+      val extracted = qemuBinaryBundler.extractBundledBinaries()
+      if (extracted.isNotEmpty()) {
+        Log.i("VmManagerService", "Extracted ${extracted.size} bundled QEMU binaries: ${extracted.joinToString(", ")}")
+        withContext(Dispatchers.Main) {
+          appendTerminalLine(TerminalLine("✅ Bundled QEMU binaries extracted: ${extracted.joinToString(", ")}", TerminalGreen, isSystem = true))
+          appendTerminalLine(TerminalLine("Real QEMU VM execution is now available!", TerminalCyan, isSystem = true))
+        }
+      } else {
+        Log.w("VmManagerService", "No bundled QEMU binaries found - will use system QEMU or simulation mode")
+      }
+    }
+    
     // Print initial banner explaining execution modes
     val report = _virtualizationReport.value
     appendTerminalLine(TerminalLine("=== ANDROID LINUX RUNTIME & VM SUBSYSTEM ===", TerminalCyan, isSystem = true))
@@ -139,82 +157,152 @@ class VmManagerService(
       repository.updateVm(updated)
       shellEngine = LinuxShellEngine(updated)
 
-      appendTerminalLine(TerminalLine("=== Starting QEMU Virtual Machine (${vm.name}) ===", TerminalCyan, isSystem = true))
+      // Initialize real QEMU engine for actual VM execution
+      realQemuEngine = RealQemuEngine(
+        context = context,
+        onOutputLine = { line -> appendTerminalLine(line) },
+        onStatusChange = { running ->
+          if (!running) {
+            // VM stopped unexpectedly
+            val stoppedVm = updated.copy(status = VmStatus.STOPPED.name)
+            _activeVm.value = stoppedVm
+            scope.launch(Dispatchers.IO) { repository.updateVm(stoppedVm) }
+          }
+        }
+      )
+
+      appendTerminalLine(TerminalLine("=== Starting Real QEMU Virtual Machine (${vm.name}) ===", TerminalCyan, isSystem = true))
       val cli = QemuCliBuilder.generateQemuCli(vm)
       appendTerminalLine(TerminalLine("$ $cli", TerminalDimText))
-      delay(300)
 
-      // BIOS / UEFI POST Sequence
-      appendTerminalLine(TerminalLine("SeaBIOS (version 1.16.3-debian-1.16.3-2)", TerminalDimText))
-      appendTerminalLine(TerminalLine("iPXE (http://ipxe.org) 00:03.0 C000 PCI2.10 PnP PMM+1FE00000+1FE00000 C000", TerminalDimText))
-      appendTerminalLine(TerminalLine("Booting from Hard Disk...", TerminalGreen))
-      delay(400)
+      // Check QEMU availability first
+      val availability = realQemuEngine!!.checkQemuAvailability(vm.arch)
+      if (!availability.available) {
+        appendTerminalLine(TerminalLine("WARNING: ${availability.binary} not found in PATH", TerminalYellow, isError = true))
+        appendTerminalLine(TerminalLine("Falling back to simulated mode. Install QEMU or bundle binaries for real VM execution.", TerminalDimText))
+        delay(300)
 
-      // Linux Kernel Decompression and Hardware Probe
-      val distro = DistroCatalog.DISTROS.firstOrNull { it.id == vm.distroId }
-      val bootLogs = listOf(
-        "[    0.000000] Linux version 6.6.21-qemu-virt (${vm.arch}) (gcc 13.2.1) #1 SMP PREEMPT",
-        "[    0.000000] Command line: ${vm.kernelParams}",
-        "[    0.001200] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'",
-        "[    0.003400] e820: [mem 0x0000000000000000-0x000000000009fbff] usable",
-        "[    0.008900] smp: Bringing up secondary CPUs ...",
-        "[    0.012300] smp: Brought up 1 node, ${vm.cpuCores} CPUs",
-        "[    0.045000] ACPI: Core revision 20230628",
-        "[    0.082100] Memory: ${vm.ramMb * 1024}K/${vm.ramMb * 1024}K available",
-        "[    0.114200] PCI: Using configuration type 1 for base access",
-        "[    0.142000] virtio-pci 0000:00:03.0: enabling device (0000 -> 0003)",
-        "[    0.168300] virtio_blk virtio0: [vda] ${vm.diskSizeGb} GiB (${(vm.diskSizeGb * 2097152).toLong()} sectors)",
-        "[    0.201400] virtio_net virtio1 eth0: link up, duplex full, speed 1000Mbps",
-        "[    0.235100] input: QEMU VirtIO Keyboard as /devices/virtual/input/input0",
-        "[    0.312000] EXT4-fs (vda1): mounted filesystem with ordered data mode. Quota mode: none.",
-        "[    0.410200] systemd[1]: Inserted module 'autofs4'",
-        "[    0.520100] [ OK ] Started Virtual Console Setup.",
-        "[    0.640100] [ OK ] Mounted Configuration File System.",
-        "[    0.720400] [ OK ] Reached target System Initialization.",
-        "[    0.830100] [ OK ] Started OpenBSD Secure Shell server (sshd).",
-        "[    0.910000] [ OK ] Started Network Name Resolution (systemd-resolved).",
-        "[    1.020000] eth0: DHCP lease acquired 10.0.2.15/24, gateway 10.0.2.2",
-        "[    1.150000] [ OK ] Reached target Multi-User System.",
-        "[    1.250000] [ OK ] Reached target Graphical Interface."
-      )
-
-      for (log in bootLogs) {
-        val color = when {
-          log.contains("[ OK ]") -> TerminalGreen
-          log.contains("DHCP") -> TerminalCyan
-          log.contains("virtio") -> TerminalYellow
-          else -> TerminalWhite
-        }
-        appendTerminalLine(TerminalLine(log, color))
-        delay(Random.nextLong(20, 65))
+        // Fall back to simulation mode
+        runSimulationMode(updated, vm)
+        return@launch
       }
 
-      appendTerminalLine(TerminalLine("", TerminalWhite))
-      appendTerminalLine(
-        TerminalLine(
-          "Welcome to ${distro?.name ?: vm.name} (${vm.arch}) - QEMU Kernel 6.6.21-qemu-virt",
-          TerminalGreen,
-          isSystem = true
-        )
-      )
-      appendTerminalLine(
-        TerminalLine(
-          "IP: 10.0.2.15/24 | SSH Port: 2222 -> 22 | Web: 8080 -> 80",
-          TerminalCyan
-        )
-      )
-      appendTerminalLine(TerminalLine("Type 'help' or 'neofetch' to begin.", TerminalYellow))
-      appendTerminalLine(TerminalLine("", TerminalWhite))
+      appendTerminalLine(TerminalLine("Detected: ${availability.version}", TerminalGreen))
+      appendTerminalLine(TerminalLine("Launching real QEMU process...", TerminalCyan))
 
-      val runningVm = updated.copy(status = VmStatus.RUNNING.name)
-      _activeVm.value = runningVm
-      repository.updateVm(runningVm)
-      startTelemetryTicker()
+      // Start the actual QEMU process
+      val started = realQemuEngine!!.startVm(cli)
+      
+      if (started) {
+        // Wait for initial boot output
+        delay(2000)
+        
+        appendTerminalLine(TerminalLine("", TerminalWhite))
+        appendTerminalLine(
+          TerminalLine(
+            "Real QEMU VM '${vm.name}' is now running!",
+            TerminalGreen,
+            isSystem = true
+          )
+        )
+        appendTerminalLine(TerminalLine("Guest IP: 10.0.2.15/24 (SLIRP NAT) | SSH: localhost:2222 -> :22", TerminalCyan))
+        appendTerminalLine(TerminalLine("Type QEMU monitor commands or interact with guest OS.", TerminalYellow))
+        appendTerminalLine(TerminalLine("", TerminalWhite))
+
+        val runningVm = updated.copy(status = VmStatus.RUNNING.name)
+        _activeVm.value = runningVm
+        repository.updateVm(runningVm)
+        startTelemetryTicker()
+      } else {
+        appendTerminalLine(TerminalLine("Failed to start real QEMU process.", TerminalRed, isError = true))
+        val failedVm = updated.copy(status = VmStatus.STOPPED.name)
+        _activeVm.value = failedVm
+        repository.updateVm(failedVm)
+      }
     }
+  }
+
+  /**
+   * Run in simulation mode when real QEMU is not available
+   */
+  private suspend fun runSimulationMode(updated: VirtualMachineEntity, vm: VirtualMachineEntity) {
+    delay(300)
+
+    // BIOS / UEFI POST Sequence (simulated)
+    appendTerminalLine(TerminalLine("SeaBIOS (version 1.16.3-debian-1.16.3-2)", TerminalDimText))
+    appendTerminalLine(TerminalLine("iPXE (http://ipxe.org) 00:03.0 C000 PCI2.10 PnP PMM+1FE00000+1FE00000 C000", TerminalDimText))
+    appendTerminalLine(TerminalLine("Booting from Hard Disk...", TerminalGreen))
+    delay(400)
+
+    // Linux Kernel Decompression and Hardware Probe
+    val distro = DistroCatalog.DISTROS.firstOrNull { it.id == vm.distroId }
+    val bootLogs = listOf(
+      "[    0.000000] Linux version 6.6.21-qemu-virt (${vm.arch}) (gcc 13.2.1) #1 SMP PREEMPT",
+      "[    0.000000] Command line: ${vm.kernelParams}",
+      "[    0.001200] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'",
+      "[    0.003400] e820: [mem 0x0000000000000000-0x000000000009fbff] usable",
+      "[    0.008900] smp: Bringing up secondary CPUs ...",
+      "[    0.012300] smp: Brought up 1 node, ${vm.cpuCores} CPUs",
+      "[    0.045000] ACPI: Core revision 20230628",
+      "[    0.082100] Memory: ${vm.ramMb * 1024}K/${vm.ramMb * 1024}K available",
+      "[    0.114200] PCI: Using configuration type 1 for base access",
+      "[    0.142000] virtio-pci 0000:00:03.0: enabling device (0000 -> 0003)",
+      "[    0.168300] virtio_blk virtio0: [vda] ${vm.diskSizeGb} GiB (${(vm.diskSizeGb * 2097152).toLong()} sectors)",
+      "[    0.201400] virtio_net virtio1 eth0: link up, duplex full, speed 1000Mbps",
+      "[    0.235100] input: QEMU VirtIO Keyboard as /devices/virtual/input/input0",
+      "[    0.312000] EXT4-fs (vda1): mounted filesystem with ordered data mode. Quota mode: none.",
+      "[    0.410200] systemd[1]: Inserted module 'autofs4'",
+      "[    0.520100] [ OK ] Started Virtual Console Setup.",
+      "[    0.640100] [ OK ] Mounted Configuration File System.",
+      "[    0.720400] [ OK ] Reached target System Initialization.",
+      "[    0.830100] [ OK ] Started OpenBSD Secure Shell server (sshd).",
+      "[    0.910000] [ OK ] Started Network Name Resolution (systemd-resolved).",
+      "[    1.020000] eth0: DHCP lease acquired 10.0.2.15/24, gateway 10.0.2.2",
+      "[    1.150000] [ OK ] Reached target Multi-User System.",
+      "[    1.250000] [ OK ] Reached target Graphical Interface."
+    )
+
+    for (log in bootLogs) {
+      val color = when {
+        log.contains("[ OK ]") -> TerminalGreen
+        log.contains("DHCP") -> TerminalCyan
+        log.contains("virtio") -> TerminalYellow
+        else -> TerminalWhite
+      }
+      appendTerminalLine(TerminalLine(log, color))
+      delay(Random.nextLong(20, 65))
+    }
+
+    appendTerminalLine(TerminalLine("", TerminalWhite))
+    appendTerminalLine(
+      TerminalLine(
+        "Welcome to ${distro?.name ?: vm.name} (${vm.arch}) - QEMU Kernel 6.6.21-qemu-virt",
+        TerminalGreen,
+        isSystem = true
+      )
+    )
+    appendTerminalLine(
+      TerminalLine(
+        "IP: 10.0.2.15/24 | SSH Port: 2222 -> 22 | Web: 8080 -> 80",
+        TerminalCyan
+      )
+    )
+    appendTerminalLine(TerminalLine("Type 'help' or 'neofetch' to begin.", TerminalYellow))
+    appendTerminalLine(TerminalLine("", TerminalWhite))
+
+    val runningVm = updated.copy(status = VmStatus.RUNNING.name)
+    _activeVm.value = runningVm
+    repository.updateVm(runningVm)
+    startTelemetryTicker()
   }
 
   fun pauseVm(vm: VirtualMachineEntity) {
     scope.launch(Dispatchers.Default) {
+      // If real QEMU engine is active, use it for pausing
+      if (realQemuEngine != null && realQemuEngine!!.isVmRunning()) {
+        realQemuEngine!!.pauseVm()
+      }
+      
       val updated = vm.copy(status = VmStatus.PAUSED.name)
       _activeVm.value = updated
       repository.updateVm(updated)
@@ -225,6 +313,11 @@ class VmManagerService(
 
   fun resumeVm(vm: VirtualMachineEntity) {
     scope.launch(Dispatchers.Default) {
+      // If real QEMU engine is active, use it for resuming
+      if (realQemuEngine != null && realQemuEngine!!.isVmRunning()) {
+        realQemuEngine!!.resumeVm()
+      }
+      
       val updated = vm.copy(status = VmStatus.RUNNING.name)
       _activeVm.value = updated
       repository.updateVm(updated)
@@ -236,6 +329,13 @@ class VmManagerService(
   fun shutdownVm(vm: VirtualMachineEntity) {
     bootJob?.cancel()
     scope.launch(Dispatchers.Default) {
+      // If real QEMU engine is active, send powerdown command to real VM
+      if (realQemuEngine != null && realQemuEngine!!.isVmRunning()) {
+        realQemuEngine!!.sendPowerEvent("powerdown")
+        delay(3000) // Wait for graceful shutdown
+        realQemuEngine!!.stopVm()
+      }
+      
       appendTerminalLine(TerminalLine("Sending ACPI powerdown event to guest...", TerminalYellow, isSystem = true))
       delay(400)
       appendTerminalLine(TerminalLine("[ OK ] Stopped target Multi-User System.", TerminalDimText))
@@ -251,6 +351,12 @@ class VmManagerService(
 
   fun forceResetVm(vm: VirtualMachineEntity) {
     scope.launch(Dispatchers.Default) {
+      // If real QEMU engine is active, send reset command to real VM
+      if (realQemuEngine != null && realQemuEngine!!.isVmRunning()) {
+        realQemuEngine!!.sendPowerEvent("reset")
+        delay(2000)
+      }
+      
       appendTerminalLine(TerminalLine("=== HARD RESET TRIGGERED (QEMU Monitor 'system_reset') ===", TerminalRed, isSystem = true))
       val stopped = vm.copy(status = VmStatus.STOPPED.name)
       _activeVm.value = stopped
