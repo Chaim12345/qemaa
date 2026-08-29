@@ -120,8 +120,8 @@ fun MainApp(viewModel: MainViewModel) {
     ) {
       TerminalScreen(
         terminalLines = terminalLines,
-        vmStatus = viewModel.vmState.collectAsState().value,
-        activePrompt = viewModel.vmService.getActivePrompt(),
+        vmStatus = vmState,
+        activePrompt = viewModel.getActivePrompt(),
         terminalInput = terminalInput,
         fontSizeSp = fontSizeSp,
         onInputChange = viewModel::onTerminalInputChange,
