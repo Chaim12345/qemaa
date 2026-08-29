@@ -155,8 +155,7 @@ class TerminalJsBridge(
 enum class MobileKeypadCategory(val title: String) {
   CORE("Terminal"),
   DEV("Dev & Code"),
-  UNIX("Pipes & Files"),
-  QEMU("VM & Debug")
+  UNIX("Pipes & Files")
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -639,18 +638,7 @@ fun XtermTerminalView(
                 XtermTouchChip(label = "df -h") { onSendCommand("df -h") }
                 XtermTouchChip(label = "free -m") { onSendCommand("free -m") }
               }
-              MobileKeypadCategory.QEMU -> {
-                XtermTouchChip(label = "neofetch") { onSendCommand("neofetch") }
-                XtermTouchChip(label = "top") { onSendCommand("top") }
-                XtermTouchChip(label = "apk update") { onSendCommand("apk update") }
-                XtermTouchChip(label = "info cpus") { onSendCommand("info cpus") }
-                XtermTouchChip(label = "info block") { onSendCommand("info block") }
-                XtermTouchChip(label = "info kvm") { onSendCommand("info kvm") }
-                XtermTouchChip(label = "rc-status") { onSendCommand("rc-status") }
-                XtermTouchChip(label = "lbu commit") { onSendCommand("lbu commit") }
-                XtermTouchChip(label = "setup-alpine") { onSendCommand("setup-alpine") }
-                XtermTouchChip(label = "help") { onSendCommand("help") }
-              }
+
             }
           }
 
@@ -796,18 +784,10 @@ private fun XtermTouchChip(
 
 private fun convertToAnsi(line: TerminalLine): String {
   val text = line.text
-  return when {
-    line.isPrompt -> "\u001B[1;32m$text\u001B[0m"
-    line.isError -> "\u001B[1;31m$text\u001B[0m"
-    line.isSuccess -> "\u001B[1;32m$text\u001B[0m"
-    line.isSystem -> "\u001B[1;36m$text\u001B[0m"
-    line.color == TerminalCyan -> "\u001B[36m$text\u001B[0m"
-    line.color == TerminalGreen -> "\u001B[32m$text\u001B[0m"
-    line.color == TerminalYellow -> "\u001B[33m$text\u001B[0m"
-    line.color == TerminalRed -> "\u001B[31m$text\u001B[0m"
-    line.color == TerminalDimText -> "\u001B[90m$text\u001B[0m"
-    line.color == TerminalPurple -> "\u001B[35m$text\u001B[0m"
-    line.color == TerminalOrange -> "\u001B[33m$text\u001B[0m"
-    else -> text
+  return when (line) {
+    is TerminalLine.Command -> "\u001B[1;32m$text\u001B[0m"
+    is TerminalLine.Error -> "\u001B[1;31m$text\u001B[0m"
+    is TerminalLine.System -> "\u001B[1;36m$text\u001B[0m"
+    is TerminalLine.Output -> text
   }
 }

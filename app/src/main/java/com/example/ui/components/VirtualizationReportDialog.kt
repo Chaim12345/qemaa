@@ -12,22 +12,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -47,30 +37,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.engine.EngineMode
 import com.example.engine.VirtualizationReport
-import com.example.ui.theme.CyberBackground
 import com.example.ui.theme.CyberBorder
 import com.example.ui.theme.CyberSurface
 import com.example.ui.theme.CyberSurfaceVariant
 import com.example.ui.theme.PrimaryCyan
 import com.example.ui.theme.SecondaryEmerald
 import com.example.ui.theme.TerminalBlack
-import com.example.ui.theme.TerminalCyan
 import com.example.ui.theme.TerminalDimText
 import com.example.ui.theme.TerminalFontFamily
-import com.example.ui.theme.TerminalGreen
-import com.example.ui.theme.TerminalOrange
-import com.example.ui.theme.TerminalPurple
-import com.example.ui.theme.TerminalRed
 import com.example.ui.theme.TerminalWhite
 import com.example.ui.theme.TerminalYellow
 
 @Composable
 fun VirtualizationReportDialog(
   report: VirtualizationReport,
-  currentMode: EngineMode,
-  onSelectMode: (EngineMode) -> Unit,
   onRunDiagnosticCommand: (String) -> Unit,
   onDismiss: () -> Unit
 ) {
@@ -104,16 +85,16 @@ fun VirtualizationReportDialog(
               tint = PrimaryCyan,
               modifier = Modifier.size(24.dp)
             )
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.size(8.dp))
             Column {
               Text(
-                text = "Hardware Virtualization & Engine",
+                text = "Hardware & Kernel Status",
                 color = TerminalWhite,
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp
               )
               Text(
-                text = "Real Linux Subsystem vs QEMU Emulation",
+                text = "Real Android Linux Host Information",
                 color = TerminalDimText,
                 fontSize = 11.sp,
                 fontFamily = TerminalFontFamily
@@ -131,123 +112,12 @@ fun VirtualizationReportDialog(
         }
 
         Spacer(modifier = Modifier.height(14.dp))
-
-        // Engine Mode Switcher Card
-        Text(
-          text = "CHOOSE EXECUTION ENGINE",
-          color = SecondaryEmerald,
-          fontSize = 12.sp,
-          fontWeight = FontWeight.Bold,
-          fontFamily = TerminalFontFamily
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          // Real Native Mode
-          val isNative = currentMode == EngineMode.REAL_NATIVE_HOST
-          Card(
-            modifier = Modifier
-              .weight(1f)
-              .clip(RoundedCornerShape(8.dp))
-              .border(
-                1.5.dp,
-                if (isNative) SecondaryEmerald else CyberBorder,
-                RoundedCornerShape(8.dp)
-              )
-              .clickable { onSelectMode(EngineMode.REAL_NATIVE_HOST) },
-            colors = CardDefaults.cardColors(
-              containerColor = if (isNative) SecondaryEmerald.copy(alpha = 0.15f) else CyberSurfaceVariant
-            )
-          ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Text(
-                  text = "⚡ Real Native Host",
-                  color = if (isNative) SecondaryEmerald else TerminalWhite,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 13.sp
-                )
-                if (isNative) {
-                  Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = SecondaryEmerald,
-                    modifier = Modifier.size(16.dp)
-                  )
-                }
-              }
-              Spacer(modifier = Modifier.height(4.dp))
-              Text(
-                text = "Direct process execution on Android's Linux kernel (/system/bin/sh). Real hardware, real CPU & memory.",
-                color = TerminalDimText,
-                fontSize = 10.sp,
-                lineHeight = 13.sp
-              )
-            }
-          }
-
-          // QEMU Guest Mode
-          val isQemu = currentMode == EngineMode.QEMU_GUEST
-          Card(
-            modifier = Modifier
-              .weight(1f)
-              .clip(RoundedCornerShape(8.dp))
-              .border(
-                1.5.dp,
-                if (isQemu) PrimaryCyan else CyberBorder,
-                RoundedCornerShape(8.dp)
-              )
-              .clickable { onSelectMode(EngineMode.QEMU_GUEST) },
-            colors = CardDefaults.cardColors(
-              containerColor = if (isQemu) PrimaryCyan.copy(alpha = 0.15f) else CyberSurfaceVariant
-            )
-          ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Text(
-                  text = "🖥️ QEMU Guest VM",
-                  color = if (isQemu) PrimaryCyan else TerminalWhite,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 13.sp
-                )
-                if (isQemu) {
-                  Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = PrimaryCyan,
-                    modifier = Modifier.size(16.dp)
-                  )
-                }
-              }
-              Spacer(modifier = Modifier.height(4.dp))
-              Text(
-                text = "Isolated virtual machine with multi-architecture support (x86_64, aarch64, riscv64), QCOW2 disks & VirtIO.",
-                color = TerminalDimText,
-                fontSize = 10.sp,
-                lineHeight = 13.sp
-              )
-            }
-          }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
         HorizontalDivider(color = CyberBorder)
         Spacer(modifier = Modifier.height(14.dp))
 
         // Hardware Probing Telemetry
         Text(
-          text = "PHYSICAL HARDWARE & KERNEL STATUS",
+          text = "PHYSICAL HARDWARE & KERNEL",
           color = PrimaryCyan,
           fontSize = 12.sp,
           fontWeight = FontWeight.Bold,
@@ -266,7 +136,7 @@ fun VirtualizationReportDialog(
             ReportRow("Device Model", report.deviceModel)
             ReportRow("Host Architecture", "${report.hostArchitecture} (${report.physicalCpuCores} physical cores)")
             ReportRow("Physical RAM", "${report.availableHostRamMb}MB free / ${report.totalHostRamMb}MB total")
-            ReportRow("Linux Kernel", report.hostKernelVersion.take(45))
+            ReportRow("Linux Kernel", report.hostKernelVersion.take(80))
             ReportRow(
               "Hardware KVM (/dev/kvm)",
               if (report.hasKvmDevice) "Present (${if (report.isKvmWritable) "Read/Write" else "SELinux Restricted"})" else "Not exposed in userland sandbox",
@@ -283,9 +153,31 @@ fun VirtualizationReportDialog(
 
         Spacer(modifier = Modifier.height(14.dp))
 
+        // Recommendations
+        if (report.recommendations.isNotEmpty()) {
+          Text(
+            text = "STATUS",
+            color = SecondaryEmerald,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = TerminalFontFamily
+          )
+          Spacer(modifier = Modifier.height(6.dp))
+          report.recommendations.forEach { rec ->
+            Text(
+              text = rec,
+              color = TerminalWhite,
+              fontSize = 11.sp,
+              fontFamily = TerminalFontFamily,
+              modifier = Modifier.padding(vertical = 2.dp)
+            )
+          }
+          Spacer(modifier = Modifier.height(14.dp))
+        }
+
         // Quick Diagnostic Action Triggers
         Text(
-          text = "QUICK REAL SYSTEM DIAGNOSTICS",
+          text = "QUICK SYSTEM DIAGNOSTICS",
           color = TerminalYellow,
           fontSize = 12.sp,
           fontWeight = FontWeight.Bold,
@@ -298,17 +190,14 @@ fun VirtualizationReportDialog(
           horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
           DiagnosticButton("uname -a") {
-            onSelectMode(EngineMode.REAL_NATIVE_HOST)
             onRunDiagnosticCommand("uname -a")
             onDismiss()
           }
           DiagnosticButton("cat /proc/cpuinfo") {
-            onSelectMode(EngineMode.REAL_NATIVE_HOST)
             onRunDiagnosticCommand("cat /proc/cpuinfo")
             onDismiss()
           }
           DiagnosticButton("cat /proc/meminfo") {
-            onSelectMode(EngineMode.REAL_NATIVE_HOST)
             onRunDiagnosticCommand("cat /proc/meminfo")
             onDismiss()
           }
@@ -321,18 +210,15 @@ fun VirtualizationReportDialog(
           horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
           DiagnosticButton("df -h") {
-            onSelectMode(EngineMode.REAL_NATIVE_HOST)
             onRunDiagnosticCommand("df -h")
             onDismiss()
           }
           DiagnosticButton("whoami && id") {
-            onSelectMode(EngineMode.REAL_NATIVE_HOST)
             onRunDiagnosticCommand("whoami && id")
             onDismiss()
           }
-          DiagnosticButton("ls -la /system/bin") {
-            onSelectMode(EngineMode.REAL_NATIVE_HOST)
-            onRunDiagnosticCommand("ls -la /system/bin")
+          DiagnosticButton("ls /system/bin") {
+            onRunDiagnosticCommand("ls /system/bin")
             onDismiss()
           }
         }
