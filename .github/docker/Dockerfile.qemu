@@ -25,15 +25,15 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in \
       x86_64) \
         echo '#!/bin/bash' > /usr/local/bin/android-cc && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang \"$@\"" >> /usr/local/bin/android-cc && \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang -Wno-error \"$@\"" >> /usr/local/bin/android-cc && \
         echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ \"$@\"" >> /usr/local/bin/android-cxx \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ -Wno-error \"$@\"" >> /usr/local/bin/android-cxx \
         ;; \
       arm64-v8a) \
         echo '#!/bin/bash' > /usr/local/bin/android-cc && \
-        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang \"$@\"" >> /usr/local/bin/android-cc && \
+        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang -Wno-error \"$@\"" >> /usr/local/bin/android-cc && \
         echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
-        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++ \"$@\"" >> /usr/local/bin/android-cxx \
+        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++ -Wno-error \"$@\"" >> /usr/local/bin/android-cxx \
         ;; \
       *) echo "Unsupported Android ABI: ${ANDROID_ABI}" >&2; exit 1 ;; \
     esac && \
@@ -53,7 +53,7 @@ RUN wget -q https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.t
     TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in x86_64) export CHOST=x86_64-linux-android ;; arm64-v8a) export CHOST=aarch64-linux-android ;; esac && \
     CC=${CC} AR=${TOOLCHAIN}/bin/llvm-ar RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
-    CFLAGS="--sysroot=${TOOLCHAIN}/sysroot -fPIC -Wno-error" LDFLAGS="--sysroot=${TOOLCHAIN}/sysroot" \
+    CFLAGS="--sysroot=${TOOLCHAIN}/sysroot -fPIC" LDFLAGS="--sysroot=${TOOLCHAIN}/sysroot" \
     ./configure --prefix=${PREFIX} --static && make -j$(nproc) && make install
 
 WORKDIR /build
