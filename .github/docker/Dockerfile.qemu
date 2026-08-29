@@ -254,6 +254,12 @@ WORKDIR /qemu/build
 # --cxx and the environment-provided NDK binutils in charge of the actual
 # compilation.
 #
+# vhost is disabled wholesale: it requires /dev/vhost-* kernel support that
+# does not exist on Android, and QEMU's vendored libvhost-user virtio UAPI
+# headers (subprojects/libvhost-user/standard-headers/linux/virtio_*.h)
+# collide with the NDK sysroot's own linux/virtio_*.h (redefinition errors)
+# because the cross file reports the host system as 'linux'.
+#
 # The final binary is a dynamic PIE executable: PIE is the standard (and on
 # modern Android required) executable form, and linking dynamically against
 # bionic while keeping every dependency static avoids the -static-pie
@@ -274,6 +280,10 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
       --disable-gtk --disable-vnc --disable-opengl --disable-curses \
       --disable-libssh --disable-virtfs --disable-tpm --disable-kvm \
       --disable-gio --disable-werror --enable-pie \
+      --disable-vhost-user --disable-vhost-net --disable-vhost-kernel \
+      --disable-vhost-vdpa --disable-vhost-user-blk-server \
+      --disable-vhost-crypto --disable-libvduse --disable-vduse-blk-export \
+      --disable-multiprocess --disable-vfio-user-server \
       --extra-cflags="-I${PREFIX}/include -I${SYSROOT}/usr/include -fPIC -DANDROID" \
       --extra-ldflags="-L${PREFIX}/lib -L${SYSROOT}/usr/lib -fPIE -pie" && \
     make -j$(nproc)
