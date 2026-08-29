@@ -1,0 +1,107 @@
+FROM ubuntu:22.04 AS builder
+
+ARG QEMU_VERSION=9.0.0
+ARG ANDROID_ABI=x86_64
+ARG NDK_VERSION=26b
+ARG ANDROID_API=24
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build tools
+RUN apt-get update && apt-get install -y \
+    autoconf automake bash bc bison build-essential bzip2 ca-certificates \
+    cmake curl file flex gawk git libtool lzip make ninja-build patch \
+    pkg-config python3 python3-pip python3-venv unzip wget xz-utils zip zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download Android NDK
+RUN wget -q https://dl.google.com/android/repository/android-ndk-r${NDK_VERSION}-linux.zip \
+    && unzip -q android-ndk-r${NDK_VERSION}-linux.zip -d /opt \
+    && rm android-ndk-r${NDK_VERSION}-linux.zip
+
+ENV ANDROID_NDK_HOME=/opt/android-ndk-r${NDK_VERSION}
+ENV PATH="${ANDROID_NDK_HOME}:${PATH}"
+
+# Set up toolchain
+RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
+    case "${ANDROID_ABI}" in \
+      x86_64) \
+        echo '#!/bin/bash' > /usr/local/bin/android-cc && \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang \"\$@\"" >> /usr/local/bin/android-cc && \
+        echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ \"\$@\"" >> /usr/local/bin/android-cxx \
+        ;; \
+      arm64-v8a) \
+        echo '#!/bin/bash' > /usr/local/bin/android-cc && \
+        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang \"\$@\"" >> /usr/local/bin/android-cc && \
+        echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
+        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++ \"\$@\"" >> /usr/local/bin/android-cxx \
+        ;; \
+    esac && \
+    chmod +x /usr/local/bin/android-cc /usr/local/bin/android-cxx
+
+ENV CC=/usr/local/bin/android-cc
+ENV CXX=/usr/local/bin/android-cxx
+ENV PREFIX=/android-prefix
+RUN mkdir -p ${PREFIX}
+
+# Build zlib
+WORKDIR /build
+RUN wget -q https://zlib.net/zlib-1.3.1.tar.gz && \
+    tar xzf zlib-1.3.1.tar.gz && cd zlib-1.3.1 && \
+    case "${ANDROID_ABI}" in \
+      x86_64) export CHOST=x86_64-linux-android ;; \
+      arm64-v8a) export CHOST=aarch64-linux-android ;; \
+    esac && \
+    CC=${CC} CFLAGS="-fPIE" LDFLAGS="-pie" \
+    ./configure --prefix=${PREFIX} --static && \
+    make -j$(nproc) && make install
+
+# Build libffi
+WORKDIR /build
+RUN wget -q https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz && \
+    tar xzf libffi-3.4.6.tar.gz && cd libffi-3.4.6 && \
+    case "${ANDROID_ABI}" in \
+      x86_64) export HOST=x86_64-linux-android ;; \
+      arm64-v8a) export HOST=aarch64-linux-android ;; \
+    esac && \
+    ./configure --host=${HOST} --prefix=${PREFIX} --enable-static --disable-shared && \
+    make -j$(nproc) && make install
+
+# Build pixman
+WORKDIR /build
+RUN wget -q https://www.cairographics.org/releases/pixman-0.43.4.tar.gz && \
+    tar xzf pixman-0.43.4.tar.gz && cd pixman-0.43.4 && \
+    case "${ANDROID_ABI}" in \
+      x86_64) export HOST=x86_64-linux-android ;; \
+      arm64-v8a) export HOST=aarch64-linux-android ;; \
+    esac && \
+    ./configure --host=${HOST} --prefix=${PREFIX} --enable-static --disable-shared && \
+    make -j$(nproc) && make install
+
+# Download QEMU
+WORKDIR /qemu
+RUN wget -q https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz && \
+    tar xf qemu-${QEMU_VERSION}.tar.xz --strip-components=1
+
+# Build QEMU
+WORKDIR /qemu/build
+RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
+    SYSROOT=${TOOLCHAIN}/sysroot && \
+    ../configure \
+      --target-list=x86_64-softmmu \
+      --cc=${CC} --cxx=${CXX} --prefix=/qemu/install \
+      --static --disable-system --disable-linux-user --enable-linux-user \
+      --disable-bsd-user --disable-docs --disable-tools --disable-guest-agent \
+      --disable-spice --disable-libusb --disable-usb-redir --disable-sdl \
+      --disable-gtk --disable-vnc --disable-opengl --disable-curses \
+      --disable-libssh --disable-virtfs --disable-tpm --disable-kvm \
+      --disable-werror --disable-pie \
+      --extra-cflags="-I${PREFIX}/include -I${SYSROOT}/usr/include -fPIC -DANDROID" \
+      --extra-ldflags="-L${PREFIX}/lib -L${SYSROOT}/usr/lib" && \
+    make -j$(nproc)
+
+# Final stage
+FROM ubuntu:22.04
+COPY --from=builder /qemu/build/qemu-system-x86_64 /qemu/
+CMD ["ls", "-la", "/qemu/"]

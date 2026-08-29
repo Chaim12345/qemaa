@@ -30,6 +30,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -54,6 +56,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.engine.TerminalLine
+import com.example.engine.VmState
 import com.example.ui.theme.CyberBackground
 import com.example.ui.theme.CyberBorder
 import com.example.ui.theme.CyberSurface
@@ -66,16 +69,20 @@ import com.example.ui.theme.TerminalFontFamily
 import com.example.ui.theme.TerminalGreen
 import com.example.ui.theme.TerminalRed
 import com.example.ui.theme.TerminalWhite
+import com.example.ui.theme.TerminalYellow
 import kotlinx.coroutines.delay
 
 @Composable
 fun TerminalScreen(
   terminalLines: List<TerminalLine>,
+  vmStatus: VmState,
   activePrompt: String,
   terminalInput: String,
   fontSizeSp: Int,
   onInputChange: (String) -> Unit,
   onSendCommand: (String?) -> Unit,
+  onStartVm: () -> Unit,
+  onStopVm: () -> Unit,
   onClearTerminal: () -> Unit,
   onIncreaseFontSize: () -> Unit,
   onDecreaseFontSize: () -> Unit,
@@ -95,8 +102,11 @@ fun TerminalScreen(
   ) {
     // Top Header Bar
     TerminalHeader(
+      vmStatus = vmStatus,
       useXtermEmulator = useXtermEmulator,
       onToggleXtermEmulator = { useXtermEmulator = !useXtermEmulator },
+      onStartVm = onStartVm,
+      onStopVm = onStopVm,
       onClearTerminal = onClearTerminal,
       onIncreaseFontSize = onIncreaseFontSize,
       onDecreaseFontSize = onDecreaseFontSize,
@@ -153,13 +163,29 @@ fun TerminalScreen(
 
 @Composable
 private fun TerminalHeader(
+  vmStatus: VmState,
   useXtermEmulator: Boolean,
   onToggleXtermEmulator: () -> Unit,
+  onStartVm: () -> Unit,
+  onStopVm: () -> Unit,
   onClearTerminal: () -> Unit,
   onIncreaseFontSize: () -> Unit,
   onDecreaseFontSize: () -> Unit,
   onOpenVirtualizationReport: () -> Unit
 ) {
+  val statusColor = when (vmStatus) {
+    VmState.RUNNING -> SecondaryEmerald
+    VmState.BOOTING -> TerminalYellow
+    VmState.ERROR -> TerminalRed
+    VmState.STOPPED -> TerminalDimText
+  }
+  val statusText = when (vmStatus) {
+    VmState.RUNNING -> "VM Running"
+    VmState.BOOTING -> "Booting..."
+    VmState.ERROR -> "Error"
+    VmState.STOPPED -> "VM Stopped"
+  }
+
   Surface(
     modifier = Modifier
       .fillMaxWidth()
@@ -179,18 +205,35 @@ private fun TerminalHeader(
             modifier = Modifier
               .size(10.dp)
               .clip(CircleShape)
-              .background(SecondaryEmerald)
+              .background(statusColor)
           )
           Spacer(modifier = Modifier.width(6.dp))
           Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
               Text(
-                text = "Real Linux Host",
+                text = "Linux VM",
                 color = TerminalWhite,
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp
               )
               Spacer(modifier = Modifier.width(6.dp))
+              // Status Badge
+              Box(
+                modifier = Modifier
+                  .clip(RoundedCornerShape(4.dp))
+                  .background(statusColor.copy(alpha = 0.2f))
+                  .border(1.dp, statusColor, RoundedCornerShape(4.dp))
+                  .padding(horizontal = 4.dp, vertical = 2.dp)
+              ) {
+                Text(
+                  text = statusText,
+                  color = statusColor,
+                  fontSize = 9.sp,
+                  fontWeight = FontWeight.Bold,
+                  fontFamily = TerminalFontFamily
+                )
+              }
+              Spacer(modifier = Modifier.width(4.dp))
               // Xterm.js / Classic Toggle Badge
               Box(
                 modifier = Modifier
@@ -210,16 +253,59 @@ private fun TerminalHeader(
               }
             }
             Text(
-              text = "Real /system/bin/sh process execution",
-              color = SecondaryEmerald,
+              text = "QEMU x86_64 TCG Emulation",
+              color = statusColor,
               fontSize = 10.sp,
               fontFamily = TerminalFontFamily
             )
           }
         }
 
-        // Action Buttons
+        // VM Control & Action Buttons
         Row(verticalAlignment = Alignment.CenterVertically) {
+          // Start/Stop VM Button
+          if (vmStatus == VmState.RUNNING || vmStatus == VmState.BOOTING) {
+            Button(
+              onClick = onStopVm,
+              colors = ButtonDefaults.buttonColors(
+                containerColor = TerminalRed,
+                contentColor = TerminalWhite
+              ),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+              shape = RoundedCornerShape(6.dp),
+              modifier = Modifier.height(28.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.Stop,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp)
+              )
+              Spacer(modifier = Modifier.width(2.dp))
+              Text("Stop", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+            }
+          } else {
+            Button(
+              onClick = onStartVm,
+              colors = ButtonDefaults.buttonColors(
+                containerColor = SecondaryEmerald,
+                contentColor = TerminalBlack
+              ),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+              shape = RoundedCornerShape(6.dp),
+              modifier = Modifier.height(28.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp)
+              )
+              Spacer(modifier = Modifier.width(2.dp))
+              Text("Start", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+            }
+          }
+
+          Spacer(modifier = Modifier.width(4.dp))
+
           IconButton(onClick = onOpenVirtualizationReport, modifier = Modifier.size(32.dp)) {
             Icon(
               imageVector = Icons.Default.Memory,
@@ -236,7 +322,7 @@ private fun TerminalHeader(
               modifier = Modifier.size(18.dp)
             )
           }
-          IconButton(onClick = onDecreaseFontSize, modifier = Modifier.size(32.dp)) {
+          IconButton(onClick = onDecreaseFontSize, modifier = Modifier.size(28.dp)) {
             Icon(
               imageVector = Icons.Default.FormatSize,
               contentDescription = "Decrease Font",
@@ -244,7 +330,7 @@ private fun TerminalHeader(
               modifier = Modifier.size(16.dp)
             )
           }
-          IconButton(onClick = onIncreaseFontSize, modifier = Modifier.size(32.dp)) {
+          IconButton(onClick = onIncreaseFontSize, modifier = Modifier.size(28.dp)) {
             Icon(
               imageVector = Icons.Default.FormatSize,
               contentDescription = "Increase Font",
@@ -306,7 +392,6 @@ private fun ClassicTerminalView(
           lineHeight = (fontSizeSp + 4).sp
         )
       }
-      // Prompt line
       item {
         Row {
           Text(

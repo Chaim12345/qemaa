@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.engine.TerminalLine
 import com.example.engine.VirtualizationReport
 import com.example.engine.VmManagerService
+import com.example.engine.VmState
 import com.example.ui.theme.TerminalGreen
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +25,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   val terminalLines: StateFlow<List<TerminalLine>>
   val virtualizationReport: StateFlow<VirtualizationReport>
+  val vmStatus: StateFlow<VmState>
 
   private val _showVirtualizationReportDialog = MutableStateFlow(false)
   val showVirtualizationReportDialog: StateFlow<Boolean> = _showVirtualizationReportDialog.asStateFlow()
@@ -45,6 +47,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     terminalLines = vmService.terminalLines
     virtualizationReport = vmService.virtualizationReport
+    vmStatus = vmService.vmStatus
   }
 
   fun openVirtualizationReportDialog() {
@@ -70,14 +73,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     _historyIndex.value = -1
     _terminalInput.value = ""
 
-    // Check for nano command
-    if (text.startsWith("nano ")) {
+    // Check for nano command (only in native mode)
+    if (text.startsWith("nano ") && vmService.vmStatus.value != VmState.RUNNING) {
       val file = text.removePrefix("nano ").trim()
       openNanoEditor(file)
       return
     }
 
     vmService.executeTerminalInput(text)
+  }
+
+  fun startVm() {
+    vmService.startVm()
+  }
+
+  fun stopVm() {
+    vmService.stopVm()
   }
 
   fun clearTerminal() {
@@ -92,7 +103,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (_fontSizeSp.value > 9) _fontSizeSp.value -= 1
   }
 
-  // Touch Accessory Bar Key Actions
   fun handleKeyTab() {
     val current = _terminalInput.value
     val tokens = current.split(" ")
@@ -131,13 +141,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun handleKeyCtrlC() {
     vmService.appendTerminalLine(TerminalLine("^C", com.example.ui.theme.TerminalRed))
     _terminalInput.value = ""
+    // If VM is running, send Ctrl+C to VM
+    if (vmService.vmStatus.value == VmState.RUNNING) {
+      vmService.executeTerminalInput("") // handled by QemuEngine
+    }
   }
 
   fun handleKeyInsert(text: String) {
     _terminalInput.value += text
   }
 
-  // Nano Editor
   fun openNanoEditor(path: String) {
     val content = vmService.getFileContent(path) ?: ""
     _nanoState.value = NanoEditorState(

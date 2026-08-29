@@ -32,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.engine.VmState
 import com.example.ui.MainViewModel
 import com.example.ui.components.NanoEditorModal
 import com.example.ui.components.TerminalScreen
@@ -67,6 +68,7 @@ fun MainApp(viewModel: MainViewModel) {
   val nanoState by viewModel.nanoState.collectAsState()
   val virtualizationReport by viewModel.virtualizationReport.collectAsState()
   val showVirtualizationReportDialog by viewModel.showVirtualizationReportDialog.collectAsState()
+  val vmStatus by viewModel.vmStatus.collectAsState()
 
   Scaffold(
     modifier = Modifier
@@ -118,11 +120,14 @@ fun MainApp(viewModel: MainViewModel) {
     ) {
       TerminalScreen(
         terminalLines = terminalLines,
+        vmStatus = viewModel.vmStatus.collectAsState().value,
         activePrompt = viewModel.vmService.getActivePrompt(),
         terminalInput = terminalInput,
         fontSizeSp = fontSizeSp,
         onInputChange = viewModel::onTerminalInputChange,
         onSendCommand = { viewModel.sendTerminalCommand(it) },
+        onStartVm = viewModel::startVm,
+        onStopVm = viewModel::stopVm,
         onClearTerminal = viewModel::clearTerminal,
         onIncreaseFontSize = viewModel::increaseFontSize,
         onDecreaseFontSize = viewModel::decreaseFontSize,
