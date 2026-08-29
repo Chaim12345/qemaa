@@ -14,6 +14,7 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.util.concurrent.TimeUnit
 
 /**
  * Real QEMU Process Engine - Executes actual QEMU virtual machines on Android
@@ -63,7 +64,8 @@ class RealQemuEngine(
       onOutputLine(TerminalLine("$ ${args.joinToString(" ")}", TerminalDimText))
 
       // Build ProcessBuilder
-      val pb = ProcessBuilder(args.toTypedArray())
+      val argsArray = args.toTypedArray()
+      val pb = ProcessBuilder(*argsArray)
       pb.directory(qemuDir)
       
       // Set up environment
@@ -117,7 +119,7 @@ class RealQemuEngine(
       
       // Wait a bit for graceful shutdown
       kotlin.runCatching {
-        qemuProcess?.waitFor(3000)
+        qemuProcess?.waitFor(3, TimeUnit.SECONDS)
       }
 
       // Force destroy if still running

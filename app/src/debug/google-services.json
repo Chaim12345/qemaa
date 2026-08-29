@@ -1,0 +1,25 @@
+{
+  "project_info": {
+    "project_number": "123456789",
+    "project_id": "fake-project-for-build",
+    "storage_bucket": "fake-project-for-build.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:123456789:android:abc123",
+        "android_client_info": {
+          "package_name": "com.aistudio.linuxvm.qemu"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "fake-api-key-for-build"
+        }
+      ],
+      "services": {}
+    }
+  ],
+  "configuration_version": "1"
+}
