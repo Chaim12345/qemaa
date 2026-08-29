@@ -226,7 +226,19 @@ RUN wget -q https://download.gnome.org/sources/glib/2.80/glib-2.80.5.tar.xz && \
       -Dxattr=false \
       --wrap-mode=nodownload && \
     meson compile -C /build/glib-build -j$(nproc) && \
-    meson install -C /build/glib-build
+    meson install -C /build/glib-build && \
+    sed -i '/^Libs:/ s|$| -lintl -liconv -lpcre2-8|' \
+      ${PREFIX}/lib/pkgconfig/glib-2.0.pc \
+      ${PREFIX}/lib/pkgconfig/gthread-2.0.pc && \
+    grep -H '^Libs:' ${PREFIX}/lib/pkgconfig/glib-2.0.pc \
+      ${PREFIX}/lib/pkgconfig/gthread-2.0.pc
+
+# GLib was built as a static library, so its own dependencies (the vendored
+# libintl replacement, GNU libiconv and pcre2) end up under "Libs.private"
+# in the Meson-generated pkg-config files above.  pkg-config omits
+# Libs.private for ordinary lookups, which would leave QEMU's final link
+# with undefined references; the sed above therefore appends the static
+# closure to the public Libs line instead.
 
 # Download and build QEMU for the selected Android host ABI.
 WORKDIR /qemu
@@ -234,13 +246,26 @@ RUN wget -q https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz && \
     tar xf qemu-${QEMU_VERSION}.tar.xz --strip-components=1
 
 WORKDIR /qemu/build
+# A blank --cross-prefix switches QEMU's configure into cross-compilation
+# mode: it emits a Meson *cross* file (complete with a [host_machine]
+# section) instead of a native file, so Meson only compiles - never runs -
+# its sanity-check executable on the Linux build host, and it points a
+# native file at gcc for build-time tools.  The blank prefix keeps --cc,
+# --cxx and the environment-provided NDK binutils in charge of the actual
+# compilation.
+#
 # The final binary is a dynamic PIE executable: PIE is the standard (and on
 # modern Android required) executable form, and linking dynamically against
 # bionic while keeping every dependency static avoids the -static-pie
 # toolchain limitation (bionic only supports static PIE from API 29).
 RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     SYSROOT=${TOOLCHAIN}/sysroot && \
+    AR=${TOOLCHAIN}/bin/llvm-ar \
+    NM=${TOOLCHAIN}/bin/llvm-nm \
+    RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
+    STRIP=${TOOLCHAIN}/bin/llvm-strip \
     ../configure \
+      --cross-prefix= \
       --target-list=x86_64-softmmu \
       --cc=${CC} --cxx=${CXX} --host-cc=gcc --prefix=/qemu/install \
       --enable-system --disable-linux-user \
@@ -248,7 +273,7 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
       --disable-spice --disable-libusb --disable-usb-redir --disable-sdl \
       --disable-gtk --disable-vnc --disable-opengl --disable-curses \
       --disable-libssh --disable-virtfs --disable-tpm --disable-kvm \
-      --disable-werror --enable-pie \
+      --disable-gio --disable-werror --enable-pie \
       --extra-cflags="-I${PREFIX}/include -I${SYSROOT}/usr/include -fPIC -DANDROID" \
       --extra-ldflags="-L${PREFIX}/lib -L${SYSROOT}/usr/lib -fPIE -pie" && \
     make -j$(nproc)
