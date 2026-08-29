@@ -24,16 +24,12 @@ ENV PREFIX=/android-prefix
 RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in \
       x86_64) \
-        echo '#!/bin/bash' > /usr/local/bin/android-cc && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang -w \"$@\"" >> /usr/local/bin/android-cc && \
-        echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ -w \"$@\"" >> /usr/local/bin/android-cxx \
+        printf '%s\n' '#!/bin/bash' 'newargs=()' 'for a in "$@"; do' '  case "$a" in -Werror) ;; *) newargs+=("$a");; esac' 'done' "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang -w \"${newargs[@]}\"" > /usr/local/bin/android-cc && \
+        printf '%s\n' '#!/bin/bash' 'newargs=()' 'for a in "$@"; do' '  case "$a" in -Werror) ;; *) newargs+=("$a");; esac' 'done' "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ -w \"${newargs[@]}\"" > /usr/local/bin/android-cxx \
         ;; \
       arm64-v8a) \
-        echo '#!/bin/bash' > /usr/local/bin/android-cc && \
-        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang -Wno-error \"$@\"" >> /usr/local/bin/android-cc && \
-        echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
-        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++ -Wno-error \"$@\"" >> /usr/local/bin/android-cxx \
+        printf '%s\n' '#!/bin/bash' 'newargs=()' 'for a in "$@"; do' '  case "$a" in -Werror) ;; *) newargs+=("$a");; esac' 'done' "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang -w \"${newargs[@]}\"" > /usr/local/bin/android-cc && \
+        printf '%s\n' '#!/bin/bash' 'newargs=()' 'for a in "$@"; do' '  case "$a" in -Werror) ;; *) newargs+=("$a");; esac' 'done' "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++ -w \"${newargs[@]}\"" > /usr/local/bin/android-cxx \
         ;; \
       *) echo "Unsupported Android ABI: ${ANDROID_ABI}" >&2; exit 1 ;; \
     esac && \
@@ -48,9 +44,9 @@ ENV PKG_CONFIG_LIBDIR=/android-prefix/lib/pkgconfig
 RUN mkdir -p ${PREFIX}
 
 WORKDIR /build
-RUN wget -q https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz && \
-    tar xzf zlib-1.2.13.tar.gz && cd zlib-1.2.13 && \
-    sed -i '/CFLAGS="\$CFLAGS -Werror"/d' configure && \
+RUN wget -q https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz && \
+    tar xzf zlib-1.3.1.tar.gz && cd zlib-1.3.1 && \
+    sed -i 's/-Werror//g' configure && \
     TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in x86_64) export CHOST=x86_64-linux-android ;; arm64-v8a) export CHOST=aarch64-linux-android ;; esac && \
     CC=${CC} AR=${TOOLCHAIN}/bin/llvm-ar RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
@@ -75,7 +71,6 @@ RUN wget -q https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.43/
       CFLAGS="--sysroot=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot -fPIC -DANDROID" LDFLAGS="--sysroot=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" && \
     make -j$(nproc) && make install
 
-# pixman 0.43.4 dropped autotools; build with Meson
 WORKDIR /build
 RUN wget -q https://www.cairographics.org/releases/pixman-0.43.4.tar.gz && \
     tar xzf pixman-0.43.4.tar.gz && \
