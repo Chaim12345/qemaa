@@ -1,0 +1,84 @@
+name: Android Emulator Smoke Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/**"
+      - "assets/**"
+      - ".github/docker/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-android-emulator
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_API_LEVEL: 30
+  ANDROID_TARGET: google_apis
+  ANDROID_ARCH: x86_64
+
+jobs:
+  emulator-smoke:
+    name: Run APK on Android emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: AVD cache
+        uses: actions/cache@v6
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_TARGET }}-${{ env.ANDROID_ARCH }}
+
+      - name: Build debug APK (smoke)
+        run: ./gradlew assembleDebug --no-daemon --parallel --build-cache --stacktrace
+
+      - name: Run app on emulator
+        id: emulator-run
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.ANDROID_API_LEVEL }}
+          target: ${{ env.ANDROID_TARGET }}
+          arch: ${{ env.ANDROID_ARCH }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 4096 -partition-size 8192 -qemu -cpu host
+          disable-animations: true
+          emulator-boot-timeout: 900
+          script: |
+            set -e
+            adb wait-for-device
+
+            # Find the built debug APK
+            apk="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+            test -n "${apk}" || { echo "Error: debug APK not found"; exit 1; }
+            echo "Using APK: ${apk}"
+
+            # Install and launch main activity
+            adb install -r "${apk}"
+            adb shell am start -n "com.example.qemaa/.MainActivity" || {
+              echo "Warning: failed to start MainActivity";
+              adb shell pm list packages | sed 's/^package://';
+              exit 1;
+            }
+
+            # Basic smoke: wait a bit, then check logcat for app process
+            sleep 30
+            adb logcat -d | grep -i "qemaa" || echo "No obvious qemaa log entries; smoke test is best-effort."
