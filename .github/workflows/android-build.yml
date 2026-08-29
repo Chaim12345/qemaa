@@ -12,8 +12,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  QEMU_VERSION: "8.2.0"
-  QEMU_BASE_URL: "https://download.qemu.org"
+  # Using ziglang/qemu-static releases as the official QEMU project
+  # no longer provides pre-built static binaries
+  QEMU_VERSION: "10.1.2.2"
+  QEMU_BASE_URL: "https://github.com/ziglang/qemu-static/releases/download"
 
 jobs:
   build:
@@ -40,65 +42,97 @@ jobs:
       - name: Install QEMU Download Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget xz-utils gzip
+          sudo apt-get install -y wget xz-utils gzip curl
 
-      - name: Download QEMU Binaries for x86_64
+      - name: Download QEMU Static Binaries (All-in-One Package)
         run: |
           mkdir -p qemu-downloads
           cd qemu-downloads
-          echo "Downloading QEMU x86_64..."
-          wget -q "${{ env.QEMU_BASE_URL }}/qemu-${{ env.QEMU_VERSION }}-static-x86_64.tar.xz" || \
-          wget -q "https://github.com/qemu/qemu/releases/download/v${{ env.QEMU_VERSION }}/qemu-${{ env.QEMU_VERSION }}-static-x86_64.tar.xz" || \
-          echo "QEMU x86_64 static binary not available, will use simulation mode"
-          ls -la *.tar.xz 2>/dev/null || echo "No x86_64 tarball found"
-
-      - name: Download QEMU Binaries for AArch64
-        run: |
-          cd qemu-downloads
-          echo "Downloading QEMU AArch64..."
-          wget -q "${{ env.QEMU_BASE_URL }}/qemu-${{ env.QEMU_VERSION }}-static-aarch64.tar.xz" || \
-          wget -q "https://github.com/qemu/qemu/releases/download/v${{ env.QEMU_VERSION }}/qemu-${{ env.QEMU_VERSION }}-static-aarch64.tar.xz" || \
-          echo "QEMU AArch64 static binary not available, will use simulation mode"
-          ls -la *.tar.xz 2>/dev/null || echo "No aarch64 tarball found"
-
-      - name: Download QEMU Binaries for RISC-V 64
-        run: |
-          cd qemu-downloads
-          echo "Downloading QEMU RISC-V 64..."
-          wget -q "${{ env.QEMU_BASE_URL }}/qemu-${{ env.QEMU_VERSION }}-static-riscv64.tar.xz" || \
-          wget -q "https://github.com/qemu/qemu/releases/download/v${{ env.QEMU_VERSION }}/qemu-${{ env.QEMU_VERSION }}-static-riscv64.tar.xz" || \
-          echo "QEMU RISC-V 64 static binary not available, will use simulation mode"
-          ls -la *.tar.xz 2>/dev/null || echo "No riscv64 tarball found"
+          echo "Downloading QEMU static binaries (x86_64 host package with all architectures)..."
+          
+          # Try multiple versions until one succeeds
+          # Note: ziglang/qemu-static provides a single tarball containing ALL QEMU binaries
+          wget -q "${QEMU_BASE_URL}/${QEMU_VERSION}/qemu-linux-x86_64-${QEMU_VERSION}.tar.xz" || \
+          wget -q "${QEMU_BASE_URL}/10.1.2.1/qemu-linux-x86_64-10.1.2.1.tar.xz" || \
+          wget -q "${QEMU_BASE_URL}/10.1.1.1/qemu-linux-x86_64-10.1.1.1.tar.xz" || \
+          wget -q "${QEMU_BASE_URL}/10.1.1/qemu-linux-x86_64-10.1.1.tar.xz" || \
+          wget -q "${QEMU_BASE_URL}/10.1.0/qemu-linux-x86_64-10.1.0.tar.xz" || \
+          echo "QEMU static binaries not available, will use simulation mode"
+          
+          # List downloaded files
+          ls -la *.tar.xz 2>/dev/null || echo "No tarball found"
+          
+          # Verify download succeeded
+          if [ -f "qemu-linux-x86_64-${QEMU_VERSION}.tar.xz" ]; then
+            echo "✅ Successfully downloaded QEMU ${QEMU_VERSION}"
+          elif [ -f "qemu-linux-x86_64-10.1.2.1.tar.xz" ]; then
+            echo "✅ Successfully downloaded QEMU 10.1.2.1"
+          elif [ -f "qemu-linux-x86_64-10.1.1.1.tar.xz" ]; then
+            echo "✅ Successfully downloaded QEMU 10.1.1.1"
+          elif [ -f "qemu-linux-x86_64-10.1.1.tar.xz" ]; then
+            echo "✅ Successfully downloaded QEMU 10.1.1"
+          elif [ -f "qemu-linux-x86_64-10.1.0.tar.xz" ]; then
+            echo "✅ Successfully downloaded QEMU 10.1.0"
+          else
+            echo "❌ Failed to download any QEMU version"
+          fi
 
       - name: Extract QEMU Binaries
         run: |
           mkdir -p qemu-binaries
           cd qemu-downloads
+          
+          # Find and extract the tarball
           for file in *.tar.xz; do
             if [ -f "$file" ]; then
               echo "Extracting $file..."
-              tar -xf "$file" -C ../qemu-binaries --strip-components=1 2>/dev/null || \
-              tar -xf "$file" -C ../qemu-binaries 2>/dev/null || \
+              tar -xJf "$file" -C ../qemu-binaries --strip-components=1 2>/dev/null || \
               echo "Failed to extract $file"
+              break
             fi
           done
-          ls -la ../qemu-binaries/
+          
+          echo "Extracted binaries:"
+          ls -la ../qemu-binaries/bin/ 2>/dev/null | head -20 || echo "qemu-binaries directory is empty"
 
       - name: Prepare QEMU Binaries for Assets
         run: |
           mkdir -p app/src/main/assets/qemu_binaries
           
-          # Find and copy qemu-system-* binaries
-          find qemu-binaries -name "qemu-system-x86_64" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-x86_64 \; 2>/dev/null || true
-          find qemu-binaries -name "qemu-system-aarch64" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-aarch64 \; 2>/dev/null || true
-          find qemu-binaries -name "qemu-system-riscv64" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-riscv64 \; 2>/dev/null || true
-          find qemu-binaries -name "qemu-system-i386" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-i386 \; 2>/dev/null || true
-          
-          # Make them executable (they should already be, but just in case)
-          chmod +x app/src/main/assets/qemu_binaries/* 2>/dev/null || true
-          
-          echo "Bundled QEMU binaries:"
-          ls -lh app/src/main/assets/qemu_binaries/ || echo "No binaries bundled (will use simulation mode)"
+          # The ziglang/qemu-static package contains all QEMU binaries in the bin/ directory
+          # Copy the system emulation binaries we need
+          if [ -d "qemu-binaries/bin" ]; then
+            # Copy qemu-system-* binaries
+            cp qemu-binaries/bin/qemu-system-x86_64 app/src/main/assets/qemu_binaries/ 2>/dev/null && \
+              echo "✅ Copied qemu-system-x86_64" || echo "⚠️ qemu-system-x86_64 not found"
+            
+            cp qemu-binaries/bin/qemu-system-aarch64 app/src/main/assets/qemu_binaries/ 2>/dev/null && \
+              echo "✅ Copied qemu-system-aarch64" || echo "⚠️ qemu-system-aarch64 not found"
+            
+            cp qemu-binaries/bin/qemu-system-riscv64 app/src/main/assets/qemu_binaries/ 2>/dev/null && \
+              echo "✅ Copied qemu-system-riscv64" || echo "⚠️ qemu-system-riscv64 not found"
+            
+            cp qemu-binaries/bin/qemu-system-i386 app/src/main/assets/qemu_binaries/ 2>/dev/null && \
+              echo "✅ Copied qemu-system-i386" || echo "⚠️ qemu-system-i386 not found"
+            
+            # Also copy essential BIOS/firmware files from share/qemu
+            if [ -d "qemu-binaries/share/qemu" ]; then
+              mkdir -p app/src/main/assets/qemu_binaries/pc-bios
+              cp qemu-binaries/share/qemu/*.bin app/src/main/assets/qemu_binaries/pc-bios/ 2>/dev/null || true
+              cp qemu-biners/share/qemu/*.rom app/src/main/assets/qemu_binaries/pc-bios/ 2>/dev/null || true
+              cp qemu-binaries/share/qemu/*.img app/src/main/assets/qemu_binaries/pc-bios/ 2>/dev/null || true
+              echo "✅ Copied PC-BIOS files"
+            fi
+            
+            # Make all binaries executable
+            chmod +x app/src/main/assets/qemu_binaries/qemu-system-* 2>/dev/null || true
+            
+            echo ""
+            echo "Bundled QEMU binaries:"
+            ls -lh app/src/main/assets/qemu_binaries/ || echo "No binaries bundled (will use simulation mode)"
+          else
+            echo "❌ qemu-binaries/bin directory not found"
+          fi
 
       - name: Create QEMU Bundle Info File
         run: |
