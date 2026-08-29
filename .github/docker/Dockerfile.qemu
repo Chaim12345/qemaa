@@ -25,15 +25,15 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in \
       x86_64) \
         echo '#!/bin/bash' > /usr/local/bin/android-cc && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang \"\$@\"" >> /usr/local/bin/android-cc && \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang \"$@\"" >> /usr/local/bin/android-cc && \
         echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ \"\$@\"" >> /usr/local/bin/android-cxx \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ \"$@\"" >> /usr/local/bin/android-cxx \
         ;; \
       arm64-v8a) \
         echo '#!/bin/bash' > /usr/local/bin/android-cc && \
-        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang \"\$@\"" >> /usr/local/bin/android-cc && \
+        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang \"$@\"" >> /usr/local/bin/android-cc && \
         echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
-        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++ \"\$@\"" >> /usr/local/bin/android-cxx \
+        echo "exec ${TOOLCHAIN}/bin/aarch64-linux-android${ANDROID_API}-clang++ \"$@\"" >> /usr/local/bin/android-cxx \
         ;; \
       *) echo "Unsupported Android ABI: ${ANDROID_ABI}" >&2; exit 1 ;; \
     esac && \
@@ -82,7 +82,7 @@ RUN wget -q https://www.cairographics.org/releases/pixman-0.43.4.tar.gz && \
     case "${ANDROID_ABI}" in x86_64) CPU_FAMILY=x86_64; CPU=x86_64 ;; arm64-v8a) CPU_FAMILY=aarch64; CPU=aarch64 ;; esac && \
     printf '%s\n' '[binaries]' "c = '/usr/local/bin/android-cc'" "cpp = '/usr/local/bin/android-cxx'" "ar = '${TOOLCHAIN}/bin/llvm-ar'" "strip = '${TOOLCHAIN}/bin/llvm-strip'" "pkgconfig = '/usr/local/bin/android-pkg-config'" '' '[properties]' 'needs_exe_wrapper = true' '' '[built-in options]' "c_args = ['--sysroot=${SYSROOT}', '-I${PREFIX}/include', '-DANDROID', '-fPIC']" "cpp_args = ['--sysroot=${SYSROOT}', '-I${PREFIX}/include', '-DANDROID', '-fPIC']" "c_link_args = ['--sysroot=${SYSROOT}', '-L${PREFIX}/lib', '-fPIE', '-pie']" "cpp_link_args = ['--sysroot=${SYSROOT}', '-L${PREFIX}/lib', '-fPIE', '-pie']" '' '[host_machine]' "system = 'android'" "cpu_family = '${CPU_FAMILY}'" "cpu = '${CPU}'" "endian = 'little'" > /build/pixman-cross.txt && \
     meson setup /build/pixman-build /build/pixman-0.43.4 --cross-file /build/pixman-cross.txt --prefix=${PREFIX} --buildtype=release \
-      -Ddefault_library=static -Dtests=false -Ddemos=disabled --wrap-mode=nodownload && \
+      -Ddefault_library=static -Dtests=disabled -Ddemos=disabled --wrap-mode=nodownload && \
     meson compile -C /build/pixman-build -j$(nproc) && meson install -C /build/pixman-build
 
 WORKDIR /build
