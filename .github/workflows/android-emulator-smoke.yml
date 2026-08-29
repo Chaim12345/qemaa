@@ -59,7 +59,9 @@ jobs:
           target: ${{ env.ANDROID_TARGET }}
           arch: ${{ env.ANDROID_ARCH }}
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 4096 -partition-size 8192 -qemu -cpu host
+          # Note: -cpu host requires KVM which is unavailable on GitHub-hosted runners.
+          # Use qemu64 (software emulation) instead.
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 4096 -partition-size 8192 -qemu -cpu qemu64
           disable-animations: true
           emulator-boot-timeout: 900
           script: |
@@ -72,7 +74,6 @@ jobs:
             echo "Using APK: ${apk}"
 
             # Install and launch main activity
-            # Use the Gradle applicationId (com.aistudio.linuxvm.qemu), not the namespace.
             adb install -r "${apk}"
             adb shell am start -n "com.aistudio.linuxvm.qemu/.MainActivity" || {
               echo "Warning: failed to start MainActivity";
