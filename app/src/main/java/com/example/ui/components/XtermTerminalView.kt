@@ -784,18 +784,10 @@ private fun XtermTouchChip(
 
 private fun convertToAnsi(line: TerminalLine): String {
   val text = line.text
-  return when {
-    line.isPrompt -> "\u001B[1;32m$text\u001B[0m"
-    line.isError -> "\u001B[1;31m$text\u001B[0m"
-    line.isSuccess -> "\u001B[1;32m$text\u001B[0m"
-    line.isSystem -> "\u001B[1;36m$text\u001B[0m"
-    line.color == TerminalCyan -> "\u001B[36m$text\u001B[0m"
-    line.color == TerminalGreen -> "\u001B[32m$text\u001B[0m"
-    line.color == TerminalYellow -> "\u001B[33m$text\u001B[0m"
-    line.color == TerminalRed -> "\u001B[31m$text\u001B[0m"
-    line.color == TerminalDimText -> "\u001B[90m$text\u001B[0m"
-    line.color == TerminalPurple -> "\u001B[35m$text\u001B[0m"
-    line.color == TerminalOrange -> "\u001B[33m$text\u001B[0m"
-    else -> text
+  return when (line) {
+    is TerminalLine.Command -> "\u001B[1;32m$text\u001B[0m"
+    is TerminalLine.Error -> "\u001B[1;31m$text\u001B[0m"
+    is TerminalLine.System -> "\u001B[1;36m$text\u001B[0m"
+    is TerminalLine.Output -> text
   }
 }

@@ -1,155 +1,101 @@
 package com.example.engine
 
 import android.content.Context
-import com.example.ui.theme.TerminalCyan
-import com.example.ui.theme.TerminalDimText
-import com.example.ui.theme.TerminalGreen
-import com.example.ui.theme.TerminalRed
-import com.example.ui.theme.TerminalWhite
-import com.example.ui.theme.TerminalYellow
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
+/**
+ * Manages QEMU virtual machine lifecycle.
+ * No fallback modes - pure QEMU VM only.
+ */
 class VmManagerService(
-  private val context: Context,
-  private val scope: CoroutineScope
+    private val context: Context,
+    private val qemuEngine: QemuEngine
 ) {
+    private val _terminalLines = MutableStateFlow<List<TerminalLine>>(emptyList())
+    val terminalLines: StateFlow<List<TerminalLine>> = _terminalLines
 
-  private val _terminalLines = MutableStateFlow<List<TerminalLine>>(emptyList())
-  val terminalLines: StateFlow<List<TerminalLine>> = _terminalLines.asStateFlow()
+    private val _vmState = MutableStateFlow(VmState.STOPPED)
+    val vmState: StateFlow<VmState> = _vmState
 
-  private val _vmStatus = MutableStateFlow(VmState.STOPPED)
-  val vmStatus: StateFlow<VmState> = _vmStatus.asStateFlow()
+    private val _prompt = MutableStateFlow("root@linux:~# ")
+    val prompt: StateFlow<String> = _prompt
 
-  private val _virtualizationReport = MutableStateFlow(VirtualizationDetector.probeHardwareVirtualization(context))
-  val virtualizationReport: StateFlow<VirtualizationReport> = _virtualizationReport.asStateFlow()
-
-  private val realNativeEngine = RealNativeProcessEngine(context)
-  private val qemuEngine = QemuEngine(context)
-  private var qemuJob: Job? = null
-
-  init {
-    val report = _virtualizationReport.value
-    appendTerminalLine(TerminalLine("=== REAL NATIVE LINUX VM RUNTIME ===", TerminalCyan, isSystem = true))
-    appendTerminalLine(TerminalLine("Host: ${report.deviceModel}", TerminalDimText))
-    appendTerminalLine(TerminalLine("Kernel: ${report.hostKernelVersion.take(60)}", TerminalDimText))
-    appendTerminalLine(TerminalLine("CPU: ${report.hostArchitecture} (${report.physicalCpuCores} cores)", TerminalGreen))
-    appendTerminalLine(TerminalLine("RAM: ${report.totalHostRamMb}MB total", TerminalGreen))
-    appendTerminalLine(TerminalLine("KVM: ${if (report.hasKvmDevice) "Available" else "Not available (using TCG emulation)"}", TerminalYellow))
-    appendTerminalLine(TerminalLine("", TerminalWhite))
-    appendTerminalLine(TerminalLine("QEMU VM: Tap START to boot Alpine Linux", TerminalGreen, isSystem = true))
-    appendTerminalLine(TerminalLine("Native Shell: Type commands to run on host", TerminalDimText))
-    appendTerminalLine(TerminalLine("", TerminalWhite))
-  }
-
-  fun refreshVirtualizationReport() {
-    _virtualizationReport.value = VirtualizationDetector.probeHardwareVirtualization(context)
-  }
-
-  fun appendTerminalLine(line: TerminalLine) {
-    if (line.text == "__CLEAR__") {
-      _terminalLines.value = emptyList()
-    } else {
-      val current = _terminalLines.value
-      _terminalLines.value = (if (current.size > 2000) current.drop(current.size - 1800) else current) + line
-    }
-  }
-
-  fun clearTerminal() {
-    _terminalLines.value = emptyList()
-  }
-
-  fun startVm() {
-    if (_vmStatus.value == VmState.RUNNING) return
-    _vmStatus.value = VmState.BOOTING
-
-    appendTerminalLine(TerminalLine("=== Booting QEMU Virtual Machine ===", TerminalCyan, isSystem = true))
-    appendTerminalLine(TerminalLine("Target: Alpine Linux x86_64 (TCG software emulation)", TerminalDimText))
-    appendTerminalLine(TerminalLine("", TerminalWhite))
-
-    qemuJob = scope.launch(Dispatchers.IO) {
-      qemuEngine.start(
-        onOutput = { line ->
-          appendTerminalLine(TerminalLine(line, TerminalWhite))
-          if (line.contains("login:") || line.contains("Welcome to Alpine")) {
-            _vmStatus.value = VmState.RUNNING
-          }
-        },
-        onError = { error ->
-          appendTerminalLine(TerminalLine("QEMU Error: $error", TerminalRed, isError = true))
-          _vmStatus.value = VmState.ERROR
-        },
-        onComplete = {
-          _vmStatus.value = VmState.STOPPED
-          appendTerminalLine(TerminalLine("=== VM Stopped ===", TerminalYellow, isSystem = true))
+    /**
+     * Start the QEMU virtual machine.
+     */
+    fun startVm() {
+        if (_vmState.value != VmState.STOPPED) {
+            return
         }
-      )
-    }
-  }
 
-  fun stopVm() {
-    appendTerminalLine(TerminalLine("=== Stopping VM ===", TerminalYellow, isSystem = true))
-    qemuEngine.stop()
-    qemuJob?.cancel()
-    qemuJob = null
-    _vmStatus.value = VmState.STOPPED
-  }
+        _vmState.value = VmState.BOOTING
+        _terminalLines.value = emptyList()
 
-  fun executeTerminalInput(input: String) {
-    val trimmed = input.trim()
-    if (trimmed.isEmpty()) return
-
-    // Handle VM control commands
-    when (trimmed) {
-      "vm:start" -> { startVm(); return }
-      "vm:stop", "vm:shutdown" -> { stopVm(); return }
-      "vm:status" -> {
-        appendTerminalLine(TerminalLine("VM Status: ${_vmStatus.value}", TerminalCyan))
-        return
-      }
-      "clear" -> { clearTerminal(); return }
+        qemuEngine.start(
+            onOutput = { line ->
+                appendLine(TerminalLine.Output(line))
+            },
+            onError = { error ->
+                appendLine(TerminalLine.Error(error))
+                _vmState.value = VmState.ERROR
+            },
+            onComplete = {
+                _vmState.value = VmState.STOPPED
+            }
+        )
     }
 
-    // If VM is running, send input to QEMU
-    if (_vmStatus.value == VmState.RUNNING) {
-      qemuEngine.sendInput(trimmed)
-      return
+    /**
+     * Stop the QEMU virtual machine.
+     */
+    fun stopVm() {
+        if (_vmState.value == VmState.STOPPED) {
+            return
+        }
+
+        qemuEngine.stop()
+        _vmState.value = VmState.STOPPED
     }
 
-    // Otherwise execute on native host
-    val prompt = realNativeEngine.getPrompt()
-    appendTerminalLine(TerminalLine("$prompt$trimmed", TerminalGreen, isPrompt = true))
+    /**
+     * Send command to the VM's stdin.
+     */
+    fun sendInput(input: String) {
+        if (_vmState.value != VmState.RUNNING) {
+            return
+        }
 
-    val results = realNativeEngine.executeCommand(trimmed)
-    results.forEach { appendTerminalLine(it) }
-  }
-
-  fun getActivePrompt(): String {
-    return if (_vmStatus.value == VmState.RUNNING) {
-      "" // VM handles its own prompt
-    } else {
-      realNativeEngine.getPrompt()
+        qemuEngine.sendInput(input)
     }
-  }
 
-  fun getFileContent(path: String): String? {
-    return realNativeEngine.readFile(path)
-  }
+    /**
+     * Clear terminal display.
+     */
+    fun clearTerminal() {
+        _terminalLines.value = emptyList()
+    }
 
-  fun saveFileContent(path: String, content: String) {
-    realNativeEngine.writeFile(path, content)
-  }
+    /**
+     * Append a line to terminal output.
+     */
+    private fun appendLine(line: TerminalLine) {
+        _terminalLines.value = _terminalLines.value + line
 
-  fun getAutocompleteFiles(): List<Pair<String, Boolean>> {
-    return realNativeEngine.listFiles()
-  }
-}
+        // Detect when VM is fully booted
+        if (line is TerminalLine.Output) {
+            val text = line.text
+            if (text.contains("Welcome to Alpine Linux") ||
+                text.contains("login:") ||
+                text.contains("# ") ||
+                text.contains("$ ")) {
+                _vmState.value = VmState.RUNNING
+            }
+        }
+    }
 
-enum class VmState {
-  STOPPED, BOOTING, RUNNING, ERROR
+    /**
+     * Get current VM state.
+     */
+    fun getVmState(): VmState = _vmState.value
 }

@@ -68,7 +68,7 @@ fun MainApp(viewModel: MainViewModel) {
   val nanoState by viewModel.nanoState.collectAsState()
   val virtualizationReport by viewModel.virtualizationReport.collectAsState()
   val showVirtualizationReportDialog by viewModel.showVirtualizationReportDialog.collectAsState()
-  val vmStatus by viewModel.vmStatus.collectAsState()
+  val vmState by viewModel.vmState.collectAsState()
 
   Scaffold(
     modifier = Modifier
@@ -120,7 +120,7 @@ fun MainApp(viewModel: MainViewModel) {
     ) {
       TerminalScreen(
         terminalLines = terminalLines,
-        vmStatus = viewModel.vmStatus.collectAsState().value,
+        vmStatus = viewModel.vmState.collectAsState().value,
         activePrompt = viewModel.vmService.getActivePrompt(),
         terminalInput = terminalInput,
         fontSizeSp = fontSizeSp,

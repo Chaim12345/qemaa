@@ -1,181 +1,241 @@
 package com.example.engine
 
 import android.content.Context
-import com.example.ui.theme.TerminalGreen
-import com.example.ui.theme.TerminalRed
-import com.example.ui.theme.TerminalWhite
-import com.example.ui.theme.TerminalYellow
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.File
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
+import kotlinx.coroutines.*
+import java.io.*
 
-class QemuEngine(private val context: Context) {
+/**
+ * Pure QEMU VM engine.
+ * Manages QEMU process lifecycle with full system emulation.
+ */
+class QemuEngine(
+    private val context: Context
+) {
+    private var process: Process? = null
+    private var outputThread: Thread? = null
+    private var errorThread: Thread? = null
+    private var scope: CoroutineScope? = null
 
-  private val qemuDir: File by lazy {
-    val dir = File(context.filesDir, "qemu")
-    if (!dir.exists()) dir.mkdirs()
-    dir
-  }
+    private val workDir: File by lazy {
+        File(context.filesDir, "qemu").apply { mkdirs() }
+    }
 
-  private val alpineDir: File by lazy {
-    val dir = File(context.filesDir, "alpine")
-    if (!dir.exists()) dir.mkdirs()
-    dir
-  }
+    private val qemuBinary: File by lazy {
+        File(workDir, "qemu-system-x86_64")
+    }
 
-  private var qemuProcess: Process? = null
-  private var stdinWriter: OutputStreamWriter? = null
-  private var isRunning = false
-  private var outputThread: Thread? = null
+    private val kernel: File by lazy {
+        File(workDir, "vmlinuz-lts")
+    }
 
-  suspend fun startVm(
-    onOutput: (String) -> Unit,
-    onError: (String) -> Unit,
-    onComplete: () -> Unit
-  ) = withContext(Dispatchers.IO) {
-    try {
-      // Extract assets on first run
-      if (!File(alpineDir, "vmlinuz-lts").exists()) {
-        onOutput("Extracting Alpine Linux kernel...")
-        extractAsset("alpine/vmlinuz-lts", File(alpineDir, "vmlinuz-lts"))
-      }
-      if (!File(alpineDir, "initramfs-lts").exists()) {
-        onOutput("Extracting Alpine Linux initramfs...")
-        extractAsset("alpine/initramfs-lts", File(alpineDir, "initramfs-lts"))
-      }
+    private val initrd: File by lazy {
+        File(workDir, "initramfs-lts")
+    }
 
-      val kernel = File(alpineDir, "vmlinuz-lts")
-      val initrd = File(alpineDir, "initramfs-lts")
+    private val diskImage: File by lazy {
+        File(workDir, "alpine.img")
+    }
 
-      if (!kernel.exists() || !initrd.exists()) {
-        onError("Alpine kernel/initrd not found in APK assets")
-        return@withContext
-      }
+    /**
+     * Start QEMU with full system emulation.
+     */
+    fun start(
+        onOutput: (String) -> Unit,
+        onError: (String) -> Unit,
+        onComplete: () -> Unit
+    ) {
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-      // Try to find QEMU binary
-      val qemuBinary = findQemuBinary()
-      if (qemuBinary == null) {
-        onError("QEMU binary not bundled in APK. Build with GitHub Actions to include it.")
-        onOutput("")
-        onOutput("This APK was built without the QEMU binary.")
-        onOutput("The GitHub Actions workflow compiles QEMU from source")
-        onOutput("and bundles it in the APK assets.")
-        onOutput("")
-        onOutput("For now, you can use the native shell mode to execute")
-        onOutput("commands directly on the Android Linux kernel.")
-        onOutput("Type 'uname -a' or 'cat /proc/cpuinfo' to see host info.")
-        onComplete()
-        return@withContext
-      }
+        scope?.launch {
+            try {
+                // Extract assets if not present
+                extractAssetsIfNeeded()
 
-      qemuBinary.setExecutable(true)
+                // Validate required files
+                validateAssets()
 
-      onOutput("Starting QEMU virtual machine...")
-      onOutput("Binary: ${qemuBinary.absolutePath}")
-      onOutput("Kernel: ${kernel.name} (${kernel.length() / 1024 / 1024}MB)")
-      onOutput("Initrd: ${initrd.name} (${initrd.length() / 1024 / 1024}MB)")
-      onOutput("")
+                // Build QEMU command
+                val command = buildQemuCommand()
 
-      val cmd = listOf(
-        qemuBinary.absolutePath,
-        "-kernel", kernel.absolutePath,
-        "-initrd", initrd.absolutePath,
-        "-append", "console=ttyS0 quiet modules=loop,squashfs sd-mod usb-storage",
-        "-m", "256",
-        "-smp", "2",
-        "-nographic",
-        "-serial", "stdio",
-        "-no-reboot",
-        "-nodefaults",
-        "-no-user-config"
-      )
+                // Start process
+                val processBuilder = ProcessBuilder(command)
+                processBuilder.directory(workDir)
+                processBuilder.redirectErrorStream(false)
 
-      val pb = ProcessBuilder(cmd)
-      pb.redirectErrorStream(true)
-      pb.directory(context.filesDir)
+                process = processBuilder.start()
 
-      qemuProcess = pb.start()
-      stdinWriter = OutputStreamWriter(qemuProcess!!.outputStream)
-      isRunning = true
+                // Start output reader
+                outputThread = Thread {
+                    try {
+                        BufferedReader(InputStreamReader(process!!.inputStream)).use { reader ->
+                            var line: String?
+                            while (reader.readLine().also { line = it } != null) {
+                                line?.let { onOutput(it) }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (process?.isAlive == true) {
+                            onError("Output stream error: ${e.message}")
+                        }
+                    }
+                }.apply { start() }
 
-      // Read output
-      outputThread = Thread {
+                // Start error reader
+                errorThread = Thread {
+                    try {
+                        BufferedReader(InputStreamReader(process!!.errorStream)).use { reader ->
+                            var line: String?
+                            while (reader.readLine().also { line = it } != null) {
+                                line?.let { onError("QEMU: $it") }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                }.apply { start() }
+
+                // Wait for process completion
+                val exitCode = process?.waitFor() ?: -1
+                onComplete()
+
+            } catch (e: Exception) {
+                onError("Failed to start QEMU: ${e.message}")
+                onComplete()
+            }
+        }
+    }
+
+    /**
+     * Send input to QEMU's stdin.
+     */
+    fun sendInput(input: String) {
         try {
-          val reader = BufferedReader(InputStreamReader(qemuProcess!!.inputStream))
-          var line: String?
-          while (isRunning && reader.readLine().also { line = it } != null) {
-            line?.let { onOutput(it) }
-          }
+            process?.outputStream?.let { stream ->
+                stream.write("$input\n".toByteArray())
+                stream.flush()
+            }
         } catch (e: Exception) {
-          if (isRunning) onError("Read error: ${e.message}")
+            // Ignore write errors
+        }
+    }
+
+    /**
+     * Stop QEMU process.
+     */
+    fun stop() {
+        try {
+            // Send quit command to QEMU monitor
+            sendInput("quit")
+
+            // Wait a bit for graceful shutdown
+            Thread.sleep(500)
+
+            // Force kill if still running
+            process?.destroy()
+            process?.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+
+            // Cleanup threads
+            outputThread?.interrupt()
+            errorThread?.interrupt()
+
+            // Cancel coroutine scope
+            scope?.cancel()
+
+        } catch (e: Exception) {
+            // Ignore cleanup errors
         } finally {
-          isRunning = false
-          onComplete()
+            process = null
+            outputThread = null
+            errorThread = null
+            scope = null
         }
-      }.also { it.start() }
-
-    } catch (e: Exception) {
-      onError("Failed to start QEMU: ${e.message}")
-      isRunning = false
-      onComplete()
     }
-  }
 
-  fun sendInput(input: String) {
-    if (!isRunning || stdinWriter == null) return
-    try {
-      stdinWriter?.write("$input\n")
-      stdinWriter?.flush()
-    } catch (e: Exception) { /* ignore */ }
-  }
+    /**
+     * Check if QEMU is currently running.
+     */
+    fun isRunning(): Boolean {
+        return process?.isAlive == true
+    }
 
-  fun stopVm() {
-    isRunning = false
-    try {
-      stdinWriter?.close()
-      qemuProcess?.destroy()
-      qemuProcess?.waitFor()
-      outputThread?.join(2000)
-    } catch (e: Exception) { /* ignore */ }
-    qemuProcess = null
-    stdinWriter = null
-    outputThread = null
-  }
+    /**
+     * Extract QEMU and Linux assets from APK if not already present.
+     */
+    private suspend fun extractAssetsIfNeeded() = withContext(Dispatchers.IO) {
+        val assets = context.assets
 
-  private fun findQemuBinary(): File? {
-    // Check in assets directory
-    val fromAssets = File(qemuDir, "qemu-system-x86_64")
-    if (fromAssets.exists()) return fromAssets
-
-    // Try to extract from APK assets
-    try {
-      val outFile = File(qemuDir, "qemu-system-x86_64")
-      if (!outFile.exists()) {
-        context.assets.open("qemu/qemu-system-x86_64").use { input ->
-          outFile.outputStream().use { output ->
-            input.copyTo(output)
-          }
+        // Extract QEMU binary
+        if (!qemuBinary.exists() || qemuBinary.length() == 0L) {
+            extractAsset(assets, "qemu/qemu-system-x86_64", qemuBinary)
+            qemuBinary.setExecutable(true)
         }
-      }
-      if (outFile.exists()) return outFile
-    } catch (e: Exception) {
-      // QEMU binary not in assets
-    }
-    return null
-  }
 
-  private fun extractAsset(assetPath: String, outFile: File) {
-    try {
-      context.assets.open(assetPath).use { input ->
-        outFile.outputStream().use { output ->
-          input.copyTo(output)
+        // Extract kernel
+        if (!kernel.exists() || kernel.length() == 0L) {
+            extractAsset(assets, "alpine/vmlinuz-lts", kernel)
         }
-      }
-    } catch (e: Exception) {
-      // Asset not found
+
+        // Extract initrd
+        if (!initrd.exists() || initrd.length() == 0L) {
+            extractAsset(assets, "alpine/initramfs-lts", initrd)
+        }
+
+        // Extract disk image
+        if (!diskImage.exists() || diskImage.length() == 0L) {
+            extractAsset(assets, "alpine/alpine.img", diskImage)
+        }
     }
-  }
+
+    /**
+     * Validate that all required assets are present.
+     */
+    private fun validateAssets() {
+        val missing = mutableListOf<String>()
+
+        if (!qemuBinary.exists()) missing.add("QEMU binary")
+        if (!kernel.exists()) missing.add("Linux kernel")
+        if (!initrd.exists()) missing.add("initramfs")
+        if (!diskImage.exists()) missing.add("Disk image")
+
+        if (missing.isNotEmpty()) {
+            throw IllegalStateException("Missing required assets: ${missing.joinToString(", ")}")
+        }
+    }
+
+    /**
+     * Build QEMU command line with full system emulation.
+     */
+    private fun buildQemuCommand(): List<String> {
+        return listOf(
+            qemuBinary.absolutePath,
+            "-kernel", kernel.absolutePath,
+            "-initrd", initrd.absolutePath,
+            "-drive", "file=${diskImage.absolutePath},format=raw,if=virtio",
+            "-append", "root=/dev/vda console=ttyS0 quiet",
+            "-m", "512",
+            "-smp", "2",
+            "-nographic",
+            "-serial", "stdio",
+            "-monitor", "none",
+            "-net", "nic,model=virtio",
+            "-net", "user,hostfwd=tcp::2222-:22",
+            "-no-reboot",
+            "-nodefaults"
+        )
+    }
+
+    /**
+     * Extract a single asset from APK to filesystem.
+     */
+    private fun extractAsset(assets: android.content.res.AssetManager, assetPath: String, destFile: File) {
+        try {
+            assets.open(assetPath).use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        } catch (e: Exception) {
+            throw IllegalStateException("Failed to extract $assetPath: ${e.message}", e)
+        }
+    }
 }

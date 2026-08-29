@@ -384,9 +384,15 @@ private fun ClassicTerminalView(
       contentPadding = PaddingValues(vertical = 4.dp)
     ) {
       items(terminalLines) { line ->
+        val color = when (line) {
+          is TerminalLine.Error -> TerminalRed
+          is TerminalLine.Command -> TerminalGreen
+          is TerminalLine.System -> TerminalCyan
+          is TerminalLine.Output -> TerminalWhite
+        }
         Text(
           text = line.text,
-          color = line.color,
+          color = color,
           fontFamily = TerminalFontFamily,
           fontSize = fontSizeSp.sp,
           lineHeight = (fontSizeSp + 4).sp

@@ -28,7 +28,7 @@ data class VirtualizationReport(
 
 object VirtualizationDetector {
 
-  fun probeHardwareVirtualization(context: Context): VirtualizationReport {
+  fun detect(context: Context): VirtualizationReport {
     // 1. Probe /dev/kvm
     val kvmFile = File("/dev/kvm")
     val hasKvm = kvmFile.exists()
@@ -87,17 +87,16 @@ object VirtualizationDetector {
 
     val recommendations = mutableListOf<String>()
     if (hasKvm && isKvmW) {
-      recommendations.add("✓ Direct hardware KVM acceleration (/dev/kvm) is fully accessible.")
+      recommendations.add("✓ KVM acceleration available - VM will use hardware virtualization")
     } else if (hasKvm && !isKvmW) {
-      recommendations.add("⚠ /dev/kvm node exists but is restricted by Android SELinux. App uses Native Linux Host Shell & QEMU TCG.")
+      recommendations.add("⚠ KVM device exists but restricted - VM uses software emulation (TCG)")
     } else {
-      recommendations.add("ℹ Running on standard Android Linux kernel with Native Process Engine & multi-arch QEMU JNI/TCG.")
+      recommendations.add("ℹ No KVM available - VM uses software emulation (TCG)")
     }
 
     if (Build.VERSION.SDK_INT >= 33) {
-      recommendations.add("✓ Android 13+ pKVM / Microdroid subsystem supported on compatible hardware.")
+      recommendations.add("✓ Android 13+ detected with potential pKVM support")
     }
-    recommendations.add("✓ Real native shell execution active for direct Linux process execution.")
 
     return VirtualizationReport(
       hasKvmDevice = hasKvm,
