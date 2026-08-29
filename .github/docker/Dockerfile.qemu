@@ -50,6 +50,7 @@ RUN mkdir -p ${PREFIX}
 WORKDIR /build
 RUN wget -q https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz && \
     tar xzf zlib-1.2.13.tar.gz && cd zlib-1.2.13 && \
+    sed -i '/CFLAGS="\$CFLAGS -Werror"/d' configure && \
     TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in x86_64) export CHOST=x86_64-linux-android ;; arm64-v8a) export CHOST=aarch64-linux-android ;; esac && \
     CC=${CC} AR=${TOOLCHAIN}/bin/llvm-ar RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
