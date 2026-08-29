@@ -72,13 +72,14 @@ jobs:
             echo "Using APK: ${apk}"
 
             # Install and launch main activity
+            # Use the Gradle applicationId (com.aistudio.linuxvm.qemu), not the namespace.
             adb install -r "${apk}"
-            adb shell am start -n "com.example.qemaa/.MainActivity" || {
+            adb shell am start -n "com.aistudio.linuxvm.qemu/.MainActivity" || {
               echo "Warning: failed to start MainActivity";
               adb shell pm list packages | sed 's/^package://';
               exit 1;
             }
 
-            # Basic smoke: wait a bit, then check logcat for app process
+            # Basic smoke: wait a bit, then check logcat for app process/package
             sleep 30
-            adb logcat -d | grep -i "qemaa" || echo "No obvious qemaa log entries; smoke test is best-effort."
+            adb logcat -d | grep -i "com.aistudio.linuxvm.qemu" || echo "No obvious app log entries; smoke test is best-effort."
