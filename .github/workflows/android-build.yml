@@ -1,4 +1,4 @@
-name: Android CI & APK Build
+name: Android CI & QEMU Build
 
 on:
   push:
@@ -11,11 +11,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+env:
+  QEMU_VERSION: "9.0.0"
+  ANDROID_NDK_VERSION: "26b"
+  ANDROID_API: "24"
+  ANDROID_ABI: "x86_64"
+  ALPINE_MIRROR: "https://dl-cdn.alpinelinux.org/alpine/latest-stable"
+
 jobs:
   build:
-    name: Build & Test Android App
+    name: Build QEMU and Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
 
     steps:
       - name: Checkout Repository
@@ -24,46 +34,113 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle'
+          distribution: "temurin"
+          java-version: "17"
+          cache: gradle
 
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.3.1'
+          gradle-version: "9.3.1"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Android QEMU image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .github/docker/Dockerfile.qemu
+          platforms: linux/amd64
+          build-args: |
+            QEMU_VERSION=${{ env.QEMU_VERSION }}
+            NDK_VERSION=${{ env.ANDROID_NDK_VERSION }}
+            ANDROID_API=${{ env.ANDROID_API }}
+            ANDROID_ABI=${{ env.ANDROID_ABI }}
+          tags: qemu-android-builder:${{ github.sha }}
+          load: true
+          cache-from: type=gha,scope=qemu-android-x86_64
+          cache-to: type=gha,mode=max,scope=qemu-android-x86_64
+
+      - name: Copy QEMU binary into Android assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/assets/qemu
+          container_id="$(docker create "qemu-android-builder:${GITHUB_SHA}")"
+          trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
+          docker cp "${container_id}:/qemu/qemu-system-x86_64" \
+            app/src/main/assets/qemu/qemu-system-x86_64
+          chmod 0755 app/src/main/assets/qemu/qemu-system-x86_64
+          file app/src/main/assets/qemu/qemu-system-x86_64
+          test -s app/src/main/assets/qemu/qemu-system-x86_64
+
+      - name: Download Alpine Linux VM assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          alpine_dir="app/src/main/assets/alpine"
+          mkdir -p "${alpine_dir}"
+
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+            "${ALPINE_MIRROR}/releases/x86_64/netboot/vmlinuz-lts" \
+            --output "${alpine_dir}/vmlinuz-lts"
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+            "${ALPINE_MIRROR}/releases/x86_64/netboot/initramfs-lts" \
+            --output "${alpine_dir}/initramfs-lts"
+
+          test -s "${alpine_dir}/vmlinuz-lts"
+          test -s "${alpine_dir}/initramfs-lts"
+          du -h "${alpine_dir}"/*
 
       - name: Prepare Secrets and Keystore
+        shell: bash
         run: |
-          # Create .env from .env.example if missing (for Secrets Gradle Plugin)
+          set -euo pipefail
+          # Create .env from .env.example if missing (for Secrets Gradle Plugin).
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
           elif [ ! -f .env ]; then
             touch .env
           fi
 
-          # Decode debug keystore if base64 file is present
           if [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null || base64 --decode debug.keystore.base64 > debug.keystore 2>/dev/null || true
+            base64 --decode debug.keystore.base64 > debug.keystore 2>/dev/null || \
+              base64 -d debug.keystore.base64 > debug.keystore
           fi
 
-          # If debug.keystore still does not exist, generate one using keytool
           if [ ! -f debug.keystore ] || [ ! -s debug.keystore ]; then
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            keytool -genkey -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
           fi
-          ls -la debug.keystore
+          ls -lh debug.keystore
 
       - name: Ensure Gradle Wrapper
+        shell: bash
         run: |
+          set -euo pipefail
           if [ ! -f gradlew ]; then
             gradle wrapper --gradle-version 9.3.1 --distribution-type bin
-            chmod +x gradlew
-          else
-            chmod +x gradlew
           fi
+          chmod +x gradlew
 
-      - name: Build Fast Release APK
+      - name: Build Release APK with bundled QEMU
         run: ./gradlew assembleRelease --no-daemon --parallel --build-cache --stacktrace
+
+      - name: Verify bundled VM assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "${apk}"
+          unzip -l "${apk}" | grep -E 'assets/(qemu/qemu-system-x86_64|alpine/(vmlinuz-lts|initramfs-lts))$'
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
