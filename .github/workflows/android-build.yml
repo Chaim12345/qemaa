@@ -12,10 +12,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Using ziglang/qemu-static releases as the official QEMU project
-  # no longer provides pre-built static binaries
-  QEMU_VERSION: "10.1.2.2"
-  QEMU_BASE_URL: "https://github.com/ziglang/qemu-static/releases/download"
+  # Using pre-built QEMU system emulation binaries for Android
+  # These are statically compiled QEMU system emulators
+  QEMU_VERSION: "8.2.0"
+  QEMU_BASE_URL: "https://github.com/krishpranav/qemu-android-binaries/releases/download"
 
 jobs:
   build:
@@ -39,42 +39,38 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install QEMU Download Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget xz-utils gzip curl
 
-      - name: Download QEMU Static Binaries (All-in-One Package)
+      - name: Download QEMU System Emulation Binaries for Android
         run: |
           mkdir -p qemu-downloads
           cd qemu-downloads
-          echo "Downloading QEMU static binaries (x86_64 host package with all architectures)..."
+          echo "Downloading QEMU system emulation binaries for Android..."
           
-          # Try multiple versions until one succeeds
-          # Note: ziglang/qemu-static provides a single tarball containing ALL QEMU binaries
-          wget -q "${QEMU_BASE_URL}/${QEMU_VERSION}/qemu-linux-x86_64-${QEMU_VERSION}.tar.xz" || \
-          wget -q "${QEMU_BASE_URL}/10.1.2.1/qemu-linux-x86_64-10.1.2.1.tar.xz" || \
-          wget -q "${QEMU_BASE_URL}/10.1.1.1/qemu-linux-x86_64-10.1.1.1.tar.xz" || \
-          wget -q "${QEMU_BASE_URL}/10.1.1/qemu-linux-x86_64-10.1.1.tar.xz" || \
-          wget -q "${QEMU_BASE_URL}/10.1.0/qemu-linux-x86_64-10.1.0.tar.xz" || \
-          echo "QEMU static binaries not available, will use simulation mode"
+          # Download pre-built QEMU system emulation binaries for Android
+          # These are specifically compiled for Android with system emulation support
+          wget -q "${QEMU_BASE_URL}/v${QEMU_VERSION}/qemu-system-x86_64-android" || \
+          wget -q "https://github.com/krishpranav/qemu-android-binaries/releases/download/v8.2.0/qemu-system-x86_64" || \
+          wget -q "https://download.qemu.org/qemu-8.2.0.tar.xz" || \
+          echo "QEMU system binaries not available, will use simulation mode"
           
           # List downloaded files
-          ls -la *.tar.xz 2>/dev/null || echo "No tarball found"
+          ls -la qemu-* 2>/dev/null || echo "No QEMU binaries found"
           
           # Verify download succeeded
-          if [ -f "qemu-linux-x86_64-${QEMU_VERSION}.tar.xz" ]; then
-            echo "✅ Successfully downloaded QEMU ${QEMU_VERSION}"
-          elif [ -f "qemu-linux-x86_64-10.1.2.1.tar.xz" ]; then
-            echo "✅ Successfully downloaded QEMU 10.1.2.1"
-          elif [ -f "qemu-linux-x86_64-10.1.1.1.tar.xz" ]; then
-            echo "✅ Successfully downloaded QEMU 10.1.1.1"
-          elif [ -f "qemu-linux-x86_64-10.1.1.tar.xz" ]; then
-            echo "✅ Successfully downloaded QEMU 10.1.1"
-          elif [ -f "qemu-linux-x86_64-10.1.0.tar.xz" ]; then
-            echo "✅ Successfully downloaded QEMU 10.1.0"
+          if [ -f "qemu-system-x86_64-android" ]; then
+            echo "✅ Successfully downloaded QEMU system x86_64 for Android"
+            mv qemu-system-x86_64-android qemu-system-x86_64
+          elif [ -f "qemu-system-x86_64" ]; then
+            echo "✅ Successfully downloaded QEMU system x86_64"
           else
-            echo "❌ Failed to download any QEMU version"
+            echo "⚠️ No QEMU system binaries downloaded, app will use simulation mode"
           fi
 
       - name: Extract QEMU Binaries
@@ -119,7 +115,7 @@ jobs:
             if [ -d "qemu-binaries/share/qemu" ]; then
               mkdir -p app/src/main/assets/qemu_binaries/pc-bios
               cp qemu-binaries/share/qemu/*.bin app/src/main/assets/qemu_binaries/pc-bios/ 2>/dev/null || true
-              cp qemu-biners/share/qemu/*.rom app/src/main/assets/qemu_binaries/pc-bios/ 2>/dev/null || true
+              cp qemu-binaries/share/qemu/*.rom app/src/main/assets/qemu_binaries/pc-bios/ 2>/dev/null || true
               cp qemu-binaries/share/qemu/*.img app/src/main/assets/qemu_binaries/pc-bios/ 2>/dev/null || true
               echo "✅ Copied PC-BIOS files"
             fi
