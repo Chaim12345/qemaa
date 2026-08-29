@@ -1,4 +1,4 @@
-name: Android CI & APK Build
+name: Android CI & Bundle QEMU Binaries
 
 on:
   push:
@@ -11,11 +11,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  QEMU_VERSION: "8.2.0"
+  QEMU_BASE_URL: "https://download.qemu.org"
+
 jobs:
   build:
-    name: Build & Test Android App
+    name: Build & Bundle QEMU APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Repository
@@ -32,6 +36,97 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+
+      - name: Install QEMU Download Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget xz-utils gzip
+
+      - name: Download QEMU Binaries for x86_64
+        run: |
+          mkdir -p qemu-downloads
+          cd qemu-downloads
+          echo "Downloading QEMU x86_64..."
+          wget -q "${{ env.QEMU_BASE_URL }}/qemu-${{ env.QEMU_VERSION }}-static-x86_64.tar.xz" || \
+          wget -q "https://github.com/qemu/qemu/releases/download/v${{ env.QEMU_VERSION }}/qemu-${{ env.QEMU_VERSION }}-static-x86_64.tar.xz" || \
+          echo "QEMU x86_64 static binary not available, will use simulation mode"
+          ls -la *.tar.xz 2>/dev/null || echo "No x86_64 tarball found"
+
+      - name: Download QEMU Binaries for AArch64
+        run: |
+          cd qemu-downloads
+          echo "Downloading QEMU AArch64..."
+          wget -q "${{ env.QEMU_BASE_URL }}/qemu-${{ env.QEMU_VERSION }}-static-aarch64.tar.xz" || \
+          wget -q "https://github.com/qemu/qemu/releases/download/v${{ env.QEMU_VERSION }}/qemu-${{ env.QEMU_VERSION }}-static-aarch64.tar.xz" || \
+          echo "QEMU AArch64 static binary not available, will use simulation mode"
+          ls -la *.tar.xz 2>/dev/null || echo "No aarch64 tarball found"
+
+      - name: Download QEMU Binaries for RISC-V 64
+        run: |
+          cd qemu-downloads
+          echo "Downloading QEMU RISC-V 64..."
+          wget -q "${{ env.QEMU_BASE_URL }}/qemu-${{ env.QEMU_VERSION }}-static-riscv64.tar.xz" || \
+          wget -q "https://github.com/qemu/qemu/releases/download/v${{ env.QEMU_VERSION }}/qemu-${{ env.QEMU_VERSION }}-static-riscv64.tar.xz" || \
+          echo "QEMU RISC-V 64 static binary not available, will use simulation mode"
+          ls -la *.tar.xz 2>/dev/null || echo "No riscv64 tarball found"
+
+      - name: Extract QEMU Binaries
+        run: |
+          mkdir -p qemu-binaries
+          cd qemu-downloads
+          for file in *.tar.xz; do
+            if [ -f "$file" ]; then
+              echo "Extracting $file..."
+              tar -xf "$file" -C ../qemu-binaries --strip-components=1 2>/dev/null || \
+              tar -xf "$file" -C ../qemu-binaries 2>/dev/null || \
+              echo "Failed to extract $file"
+            fi
+          done
+          ls -la ../qemu-binaries/
+
+      - name: Prepare QEMU Binaries for Assets
+        run: |
+          mkdir -p app/src/main/assets/qemu_binaries
+          
+          # Find and copy qemu-system-* binaries
+          find qemu-binaries -name "qemu-system-x86_64" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-x86_64 \; 2>/dev/null || true
+          find qemu-binaries -name "qemu-system-aarch64" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-aarch64 \; 2>/dev/null || true
+          find qemu-binaries -name "qemu-system-riscv64" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-riscv64 \; 2>/dev/null || true
+          find qemu-binaries -name "qemu-system-i386" -type f -executable -exec cp {} app/src/main/assets/qemu_binaries/qemu-system-i386 \; 2>/dev/null || true
+          
+          # Make them executable (they should already be, but just in case)
+          chmod +x app/src/main/assets/qemu_binaries/* 2>/dev/null || true
+          
+          echo "Bundled QEMU binaries:"
+          ls -lh app/src/main/assets/qemu_binaries/ || echo "No binaries bundled (will use simulation mode)"
+
+      - name: Create QEMU Bundle Info File
+        run: |
+          if [ -d "app/src/main/assets/qemu_binaries" ] && [ "$(ls -A app/src/main/assets/qemu_binaries 2>/dev/null)" ]; then
+            cat > app/src/main/assets/qemu_binaries/BUNDLE_INFO.txt << EOF
+          QEMU Binaries Bundle
+          Version: ${{ env.QEMU_VERSION }}
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Architectures: $(ls app/src/main/assets/qemu_binaries/qemu-system-* 2>/dev/null | xargs -n1 basename | tr '\n' ' ')
+          
+          These are statically-linked QEMU binaries for Android.
+          They will be extracted to the app's internal storage on first run.
+          EOF
+            cat app/src/main/assets/qemu_binaries/BUNDLE_INFO.txt
+          else
+            echo "WARNING: No QEMU binaries were bundled. App will run in simulation mode only."
+            cat > app/src/main/assets/qemu_binaries/BUNDLE_INFO.txt << EOF
+          QEMU Binaries Bundle
+          Status: NO BINARIES BUNDLED
+          
+          QEMU static binaries were not available during build.
+          The app will operate in simulation mode only.
+          
+          To enable real QEMU mode:
+          1. Install QEMU via Termux: pkg install qemu-system-x86_64
+          2. Or manually place binaries in /data/data/com.aistudio.linuxvm.qemu/files/qemu/
+          EOF
+          fi
 
       - name: Prepare Secrets and Keystore
         run: |
@@ -62,13 +157,44 @@ jobs:
             chmod +x gradlew
           fi
 
-      - name: Build Fast Release APK
+      - name: Build Release APK with Bundled QEMU
         run: ./gradlew assembleRelease --no-daemon --parallel --build-cache --stacktrace
+
+      - name: Generate Build Summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### QEMU Binaries Status" >> $GITHUB_STEP_SUMMARY
+          if [ -d "app/src/main/assets/qemu_binaries" ]; then
+            echo "✅ QEMU binaries directory exists" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            ls -lh app/src/main/assets/qemu_binaries/ >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No binaries found" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ QEMU binaries directory not found" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### APK Information" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          ls -lh app/build/outputs/apk/release/*.apk >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "APK not found" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-vm-release-apk
+          name: linux-vm-release-apk-with-qemu
           path: app/build/outputs/apk/release/*.apk
           retention-days: 14
           if-no-files-found: error
+
+      - name: Upload QEMU Binaries Info
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qemu-bundle-info
+          path: |
+            app/src/main/assets/qemu_binaries/BUNDLE_INFO.txt
+            qemu-downloads/*.xz
+          retention-days: 7
+          if-no-files-found: ignore
