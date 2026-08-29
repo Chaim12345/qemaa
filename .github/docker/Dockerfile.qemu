@@ -25,9 +25,9 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in \
       x86_64) \
         echo '#!/bin/bash' > /usr/local/bin/android-cc && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang -Wno-error \"$@\"" >> /usr/local/bin/android-cc && \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang -w \"$@\"" >> /usr/local/bin/android-cc && \
         echo '#!/bin/bash' > /usr/local/bin/android-cxx && \
-        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ -Wno-error \"$@\"" >> /usr/local/bin/android-cxx \
+        echo "exec ${TOOLCHAIN}/bin/x86_64-linux-android${ANDROID_API}-clang++ -w \"$@\"" >> /usr/local/bin/android-cxx \
         ;; \
       arm64-v8a) \
         echo '#!/bin/bash' > /usr/local/bin/android-cc && \
@@ -48,12 +48,12 @@ ENV PKG_CONFIG_LIBDIR=/android-prefix/lib/pkgconfig
 RUN mkdir -p ${PREFIX}
 
 WORKDIR /build
-RUN wget -q https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz && \
-    tar xzf zlib-1.3.1.tar.gz && cd zlib-1.3.1 && \
+RUN wget -q https://zlib.net/zlib-1.2.13.tar.gz && \
+    tar xzf zlib-1.2.13.tar.gz && cd zlib-1.2.13 && \
     TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in x86_64) export CHOST=x86_64-linux-android ;; arm64-v8a) export CHOST=aarch64-linux-android ;; esac && \
     CC=${CC} AR=${TOOLCHAIN}/bin/llvm-ar RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
-    CFLAGS="--sysroot=${TOOLCHAIN}/sysroot -fPIC -w" LDFLAGS="--sysroot=${TOOLCHAIN}/sysroot" \
+    CFLAGS="--sysroot=${TOOLCHAIN}/sysroot -fPIC" LDFLAGS="--sysroot=${TOOLCHAIN}/sysroot" \
     ./configure --prefix=${PREFIX} --static && make -j$(nproc) && make install
 
 WORKDIR /build
