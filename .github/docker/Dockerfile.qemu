@@ -48,7 +48,7 @@ ENV PKG_CONFIG_LIBDIR=/android-prefix/lib/pkgconfig
 RUN mkdir -p ${PREFIX}
 
 WORKDIR /build
-RUN wget -q https://zlib.net/fossils/zlib-1.3.1.tar.gz && \
+RUN wget -q https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz && \
     tar xzf zlib-1.3.1.tar.gz && cd zlib-1.3.1 && \
     TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 && \
     case "${ANDROID_ABI}" in x86_64) export CHOST=x86_64-linux-android ;; arm64-v8a) export CHOST=aarch64-linux-android ;; esac && \
