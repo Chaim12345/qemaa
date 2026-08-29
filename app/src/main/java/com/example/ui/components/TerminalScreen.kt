@@ -64,6 +64,7 @@ import com.example.ui.theme.CyberSurfaceVariant
 import com.example.ui.theme.PrimaryCyan
 import com.example.ui.theme.SecondaryEmerald
 import com.example.ui.theme.TerminalBlack
+import com.example.ui.theme.TerminalCyan
 import com.example.ui.theme.TerminalDimText
 import com.example.ui.theme.TerminalFontFamily
 import com.example.ui.theme.TerminalGreen

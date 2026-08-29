@@ -32,10 +32,6 @@ class QemuEngine(
         File(workDir, "initramfs-lts")
     }
 
-    private val diskImage: File by lazy {
-        File(workDir, "alpine.img")
-    }
-
     /**
      * Start QEMU with full system emulation.
      */
@@ -180,10 +176,6 @@ class QemuEngine(
             extractAsset(assets, "alpine/initramfs-lts", initrd)
         }
 
-        // Extract disk image
-        if (!diskImage.exists() || diskImage.length() == 0L) {
-            extractAsset(assets, "alpine/alpine.img", diskImage)
-        }
     }
 
     /**
@@ -195,7 +187,6 @@ class QemuEngine(
         if (!qemuBinary.exists()) missing.add("QEMU binary")
         if (!kernel.exists()) missing.add("Linux kernel")
         if (!initrd.exists()) missing.add("initramfs")
-        if (!diskImage.exists()) missing.add("Disk image")
 
         if (missing.isNotEmpty()) {
             throw IllegalStateException("Missing required assets: ${missing.joinToString(", ")}")
@@ -210,8 +201,7 @@ class QemuEngine(
             qemuBinary.absolutePath,
             "-kernel", kernel.absolutePath,
             "-initrd", initrd.absolutePath,
-            "-drive", "file=${diskImage.absolutePath},format=raw,if=virtio",
-            "-append", "root=/dev/vda console=ttyS0 quiet",
+            "-append", "root=/dev/ram0 console=ttyS0 quiet ip=dhcp alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/",
             "-m", "512",
             "-smp", "2",
             "-nographic",
