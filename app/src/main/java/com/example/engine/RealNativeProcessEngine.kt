@@ -11,6 +11,15 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 
+data class TerminalLine(
+  val text: String,
+  val color: androidx.compose.ui.graphics.Color = TerminalWhite,
+  val isPrompt: Boolean = false,
+  val isError: Boolean = false,
+  val isSuccess: Boolean = false,
+  val isSystem: Boolean = false
+)
+
 class RealNativeProcessEngine(private val context: Context) {
 
   private val sandboxDir: File by lazy {
@@ -44,7 +53,6 @@ class RealNativeProcessEngine(private val context: Context) {
     environment["SHELL"] = "/system/bin/sh"
     environment["TERM"] = "xterm-256color"
 
-    // Create a readme file inside sandbox
     val readme = File(homeDir, "README.txt")
     if (!readme.exists()) {
       readme.writeText(

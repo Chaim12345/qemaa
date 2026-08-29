@@ -155,8 +155,7 @@ class TerminalJsBridge(
 enum class MobileKeypadCategory(val title: String) {
   CORE("Terminal"),
   DEV("Dev & Code"),
-  UNIX("Pipes & Files"),
-  QEMU("VM & Debug")
+  UNIX("Pipes & Files")
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -639,18 +638,7 @@ fun XtermTerminalView(
                 XtermTouchChip(label = "df -h") { onSendCommand("df -h") }
                 XtermTouchChip(label = "free -m") { onSendCommand("free -m") }
               }
-              MobileKeypadCategory.QEMU -> {
-                XtermTouchChip(label = "neofetch") { onSendCommand("neofetch") }
-                XtermTouchChip(label = "top") { onSendCommand("top") }
-                XtermTouchChip(label = "apk update") { onSendCommand("apk update") }
-                XtermTouchChip(label = "info cpus") { onSendCommand("info cpus") }
-                XtermTouchChip(label = "info block") { onSendCommand("info block") }
-                XtermTouchChip(label = "info kvm") { onSendCommand("info kvm") }
-                XtermTouchChip(label = "rc-status") { onSendCommand("rc-status") }
-                XtermTouchChip(label = "lbu commit") { onSendCommand("lbu commit") }
-                XtermTouchChip(label = "setup-alpine") { onSendCommand("setup-alpine") }
-                XtermTouchChip(label = "help") { onSendCommand("help") }
-              }
+
             }
           }
 
