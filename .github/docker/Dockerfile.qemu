@@ -6,6 +6,8 @@ ARG NDK_VERSION=26b
 ARG ANDROID_API=24
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV ANDROID_ABI=${ANDROID_ABI}
+ENV ANDROID_API=${ANDROID_API}
 
 RUN apt-get update && apt-get install -y \
     autoconf automake bash bc bison build-essential bzip2 ca-certificates \
