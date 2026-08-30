@@ -107,7 +107,9 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot -memory 3072
           disable-animations: true
           script: |
-            set -euo pipefail
+            # NOTE: executed with /bin/sh (dash) by the emulator runner action —
+            # must stay POSIX sh; no bashisms (no pipefail, no [[ ]], no arrays).
+            set -eu
 
             ARTIFACTS="${GITHUB_WORKSPACE}/emulator-artifacts"
             mkdir -p "${ARTIFACTS}"
@@ -150,6 +152,22 @@ jobs:
             # ── 2. Install the APK ──────────────────────────────────────────────
             echo "=== [2/6] Install APK ==="
             adb install -r "${APK}" | tee "${ARTIFACTS}/adb-install.txt"
+            grep -q "Success" "${ARTIFACTS}/adb-install.txt" || {
+              echo "::error::adb install failed"
+              exit 1
+            }
+
+            # Verify the QEMU binary was extracted into the app's nativeLibraryDir
+            # (this validates the core fix: exec from nativeLibraryDir, not filesDir).
+            NATIVE_DIR="$(adb shell dumpsys package "${APP_PACKAGE}" \
+              | tr -d '\r' | grep -oE 'legacyNativeLibraryDir=[^ ]+' | head -1 | cut -d= -f2)"
+            echo "App nativeLibraryDir: ${NATIVE_DIR}"
+            adb shell "ls -la ${NATIVE_DIR}" | tee "${ARTIFACTS}/native-lib-dir.txt"
+            if ! adb shell "ls ${NATIVE_DIR}" | tr -d '\r' | grep -q "libqemu-system-x86_64.so"; then
+              echo "::error::libqemu-system-x86_64.so was NOT extracted into nativeLibraryDir (check useLegacyPackaging/extractNativeLibs)"
+              exit 1
+            fi
+            echo "* QEMU binary present in nativeLibraryDir" >> "${GITHUB_STEP_SUMMARY}"
 
             # Keep the setup wizard / keyguard out of the way.
             adb shell settings put global device_provisioned 1
