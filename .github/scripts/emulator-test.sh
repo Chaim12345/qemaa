@@ -69,8 +69,16 @@ grep -q "Success" "${ARTIFACTS}/adb-install.txt" || {
 
 # Verify the QEMU binary was extracted into the app's nativeLibraryDir
 # (this validates the core fix: exec from nativeLibraryDir, not filesDir).
+# NOTE: strip the prefix with sed — the path contains '==' (random suffix),
+# so 'cut -d= -f2' would truncate it at the first '='.
 NATIVE_DIR="$(adb shell dumpsys package "${APP_PACKAGE}" \
-  | tr -d '\r' | grep -oE 'legacyNativeLibraryDir=[^ ]+' | head -1 | cut -d= -f2)"
+  | tr -d '\r' | grep -oE 'legacyNativeLibraryDir=[^ ]+' | head -1 \
+  | sed 's/^legacyNativeLibraryDir=//')"
+if [ -z "${NATIVE_DIR}" ]; then
+  NATIVE_DIR="$(adb shell dumpsys package "${APP_PACKAGE}" \
+    | tr -d '\r' | grep -oE '[^g]nativeLibraryDir=[^ ]+' | head -1 \
+    | sed 's/^[a-zA-Z]*nativeLibraryDir=//')"
+fi
 echo "App nativeLibraryDir: ${NATIVE_DIR}"
 adb shell "ls -la ${NATIVE_DIR}" | tee "${ARTIFACTS}/native-lib-dir.txt"
 if ! adb shell "ls ${NATIVE_DIR}" | tr -d '\r' | grep -q "libqemu-system-x86_64.so"; then
