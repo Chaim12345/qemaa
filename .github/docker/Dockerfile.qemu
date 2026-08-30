@@ -309,7 +309,6 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
          --disable-plugins \
          --enable-pie \
          --disable-iconv \
-         -Dprefer_static=true \
          -Dvhost_user=disabled \
          -Dvhost_kernel=disabled \
          -Dvhost_vdpa=disabled \
@@ -317,7 +316,11 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
          -Dvhost_crypto=disabled \
          --extra-cflags="-I${PREFIX}/include -I${SYSROOT}/usr/include -fPIC -DANDROID -Wno-implicit-function-declaration" \
          --extra-ldflags="-L${PREFIX}/lib -L${SYSROOT}/usr/lib -ldl -Wl,--allow-multiple-definition" \
-    && make -j$(nproc)
+    && make -j$(nproc) \
+    && file /qemu/build/qemu-system-x86_64 \
+    && readelf -lW /qemu/build/qemu-system-x86_64 | grep -q "/system/bin/linker64" \
+    && readelf -dW /qemu/build/qemu-system-x86_64 | grep -q NEEDED \
+    && echo "qemu binary sanity: OK (dynamically linked against bionic)"
 
 # ── Final image ───────────────────────────────────────────────────────────────
 FROM ubuntu:22.04
