@@ -80,6 +80,10 @@ echo "* Standalone QEMU binary: $(head -n1 "${ARTIFACTS}/qemu-version.txt")" >> 
 
 # ── 3. Install the APK ───────────────────────────────────────────────────────
 echo "=== [3/7] Install APK ==="
+# The AVD is cached across runs, and every build signs the APK with a fresh
+# debug keystore — a stale install from a previous run would make
+# `adb install -r` fail with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+adb uninstall "${APP_PACKAGE}" >/dev/null 2>&1 || true
 adb install -r "${APK}" | tee "${ARTIFACTS}/adb-install.txt"
 grep -q "Success" "${ARTIFACTS}/adb-install.txt" || {
   echo "::error::adb install failed"
