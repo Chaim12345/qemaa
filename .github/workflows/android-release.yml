@@ -61,6 +61,7 @@ jobs:
             if [ -z "${emu_run_id}" ]; then
               echo "No run id given: using the latest successful '${TEST_WORKFLOW_NAME}' run on the default branch."
               emu_run_id="$(gh run list \
+                --repo "${GITHUB_REPOSITORY}" \
                 --workflow "${TEST_WORKFLOW_NAME}" \
                 --branch "${GITHUB_REF_NAME}" \
                 --status success \
@@ -90,8 +91,10 @@ jobs:
             exit 0
           fi
 
-          # Find the successful build run for that commit.
+          # Find the successful build run for that commit. NOTE: this step runs
+          # before checkout, so every gh call must pass --repo explicitly.
           build_run_id="$(gh run list \
+            --repo "${GITHUB_REPOSITORY}" \
             --workflow "${BUILD_WORKFLOW_NAME}" \
             --commit "${test_sha}" \
             --status success \
@@ -157,12 +160,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          gh run download "${BUILD_RUN_ID}" --name "${APK_ARTIFACT_NAME}" --dir release
+          gh run download "${BUILD_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "${APK_ARTIFACT_NAME}" --dir release
           ls -lh release
 
           # Attach the strongest emulator-test evidence to the release.
           mkdir -p evidence
-          if gh run download "${EMU_RUN_ID}" --name "${EVIDENCE_ARTIFACT_NAME}" --dir evidence 2>/dev/null; then
+          if gh run download "${EMU_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "${EVIDENCE_ARTIFACT_NAME}" --dir evidence 2>/dev/null; then
             cp evidence/qemu-version.txt release/qemu-version.txt 2>/dev/null || true
             cp evidence/screen-at-login.png release/emulator-screen-at-login.png 2>/dev/null || true
             cp evidence/boot-progress.txt release/emulator-boot-progress.txt 2>/dev/null || true
