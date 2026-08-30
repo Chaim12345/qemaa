@@ -84,7 +84,7 @@ WORKDIR /build
 RUN wget -q https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz \
     && tar xzf zlib-1.3.1.tar.gz \
     && cd zlib-1.3.1 \
-    && sed -i '/CFLAGS="\$CFLAGS -Werror"/d; s/CFLAGS="\$CFLAGS \$CFLAGS_OPTIM/CFLAGS="\$CFLAGS_OPTIM/' configure \
+    && sed -i 's/-Werror//g' configure \\
     && TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
     && case "${ANDROID_ABI}" in \
          x86_64)    export CHOST=x86_64-linux-android ;; \
