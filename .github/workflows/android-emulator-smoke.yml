@@ -88,8 +88,11 @@ jobs:
             echo "Using APK: ${apk}"
 
             # Install and launch main activity
+            # NOTE: applicationId is com.aistudio.linuxvm.qemu but the manifest
+            # namespace is com.example, so the activity class is
+            # com.example.MainActivity.
             adb install -r "${apk}"
-            adb shell am start -n "com.aistudio.linuxvm.qemu/.MainActivity" || {
+            adb shell am start -n "com.aistudio.linuxvm.qemu/com.example.MainActivity" || {
               echo "Warning: failed to start MainActivity";
               adb shell pm list packages | sed 's/^package://';
               exit 1;

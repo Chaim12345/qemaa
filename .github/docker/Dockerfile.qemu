@@ -61,7 +61,10 @@ exec {clangxx} -w "${{args[@]}}"
 pkg_cfg = """#!/bin/sh
 export PKG_CONFIG_DIR=
 export PKG_CONFIG_LIBDIR=/android-prefix/lib/pkgconfig
-exec /usr/bin/pkg-config "$@"
+# --static is required: all deps in /android-prefix are static-only (.a).
+# Without it, pkg-config omits Libs.private/Requires.private and probes
+# linking against static glib fail with undefined pcre2/intl symbols.
+exec /usr/bin/pkg-config --static "$@"
 """
 
 for path, content in [
@@ -303,16 +306,45 @@ RUN wget -q https://download.gnome.org/sources/glib/2.80/glib-2.80.5.tar.xz \
     && meson compile -C /build/glib-build -j$(nproc) \
     && meson install -C /build/glib-build
 
+# ── libslirp (user-mode networking backend for QEMU -net user) ──────────────
+WORKDIR /build
+RUN wget -q https://github.com/qemu/libslirp/archive/refs/tags/v4.8.0.tar.gz \
+    && tar xzf v4.8.0.tar.gz \
+    && meson setup /build/slirp-build /build/libslirp-4.8.0 \
+         --cross-file /build/android-cross.txt \
+         --prefix=${PREFIX} --buildtype=release \
+         -Ddefault_library=static \
+         --wrap-mode=nodownload \
+    && meson compile -C /build/slirp-build -j$(nproc) \
+    && meson install -C /build/slirp-build
+
 # ── QEMU ─────────────────────────────────────────────────────────────────────
 WORKDIR /qemu
 RUN wget -q https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz \
     && tar xf qemu-${QEMU_VERSION}.tar.xz --strip-components=1
 
 WORKDIR /qemu/build
+# Cross-compilation notes:
+#   * `--cross-prefix=` (blank value) forces QEMU's configure into cross mode
+#     (cross_compile=yes). In cross mode QEMU generates a meson cross file,
+#     so meson compiles its sanity check WITHOUT running the produced binary.
+#     Without it, meson treats the build as native and tries to execute the
+#     Android (bionic) binary on the Ubuntu host, failing with
+#     "Could not invoke sanity test executable: No such file or directory".
+#   * Blank cross-prefix makes binutils default to unprefixed host tools, so
+#     every tool must be provided explicitly via the environment as an NDK
+#     llvm-* binary (CC/CXX already point to the android clang wrappers).
 RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
     && SYSROOT=${TOOLCHAIN}/sysroot \
+    && export AR=${TOOLCHAIN}/bin/llvm-ar \
+    && export RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
+    && export NM=${TOOLCHAIN}/bin/llvm-nm \
+    && export OBJCOPY=${TOOLCHAIN}/bin/llvm-objcopy \
+    && export STRIP=${TOOLCHAIN}/bin/llvm-strip \
+    && export PKG_CONFIG=/usr/local/bin/android-pkg-config \
     && ../configure \
          --target-list=x86_64-softmmu \
+         --cross-prefix= \
          --cc=${CC} --cxx=${CXX} --host-cc=gcc \
          --prefix=/qemu/install \
          --enable-system --disable-linux-user --disable-bsd-user \
