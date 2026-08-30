@@ -343,20 +343,22 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
 # ── Firmware subset ───────────────────────────────────────────────────────────
 # QEMU loads x86 firmware at runtime: the SeaBIOS image (bios-256k.bin for the
 # default q35 machine), the direct-kernel-boot ROMs (linuxboot*), and the
-# virtio-net option ROM. Ship only those; the rest of pc-bios/ belongs to
-# other machines and would bloat the APK by tens of MB.
-RUN mkdir -p /qemu/pc-bios \
-    && cd /qemu/build/pc-bios \
+# virtio-net option ROM. Ship only those; the rest of the source pc-bios/
+# belongs to other machines and would bloat the APK by tens of MB.
+# NOTE: the prebuilt firmware lives in the SOURCE tree /qemu/pc-bios (the build
+# dir only holds generated files), so bundle into a separate directory.
+RUN mkdir -p /qemu-firmware \
+    && cd /qemu/pc-bios \
     && cp bios.bin bios-256k.bin linuxboot.bin linuxboot_dma.bin \
          multiboot.bin multiboot_dma.bin pvh.bin kvmvapic.bin \
          vgabios.bin vgabios-stdvga.bin vgabios-cirrus.bin vgabios-virtio.bin \
          vgabios-vmware.bin vgabios-qxl.bin \
          efi-virtio.rom pxe-virtio.rom \
-         /qemu/pc-bios/ \
-    && ls -la /qemu/pc-bios/
+         /qemu-firmware/ \
+    && ls -la /qemu-firmware/
 
 # ── Final image ───────────────────────────────────────────────────────────────
 FROM ubuntu:22.04
 COPY --from=builder /qemu/build/qemu-system-x86_64 /qemu/qemu-system-x86_64
-COPY --from=builder /qemu/pc-bios /qemu/pc-bios
+COPY --from=builder /qemu-firmware /qemu/pc-bios
 CMD ["ls", "-la", "/qemu/"]
