@@ -69,23 +69,42 @@ grep -q "Success" "${ARTIFACTS}/adb-install.txt" || {
 
 # Verify the QEMU binary was extracted into the app's nativeLibraryDir
 # (this validates the core fix: exec from nativeLibraryDir, not filesDir).
-# NOTE: strip the prefix with sed — the path contains '==' (random suffix),
-# so 'cut -d= -f2' would truncate it at the first '='.
+# dumpsys prints both 'legacyNativeLibraryDir=.../lib' and
+# ' nativeLibraryDir=.../lib/x86_64' — the .so lives in the ABI dir.
+# NOTE: strip prefixes with sed — paths contain '==' (random suffixes),
+# so 'cut -d= -f2' would truncate at the first '='.
 NATIVE_DIR="$(adb shell dumpsys package "${APP_PACKAGE}" \
-  | tr -d '\r' | grep -oE 'legacyNativeLibraryDir=[^ ]+' | head -1 \
-  | sed 's/^legacyNativeLibraryDir=//')"
+  | tr -d '\r' | grep -oE '[[:space:]]nativeLibraryDir=[^[:space:]]+' | head -1 \
+  | sed 's/^[[:space:]]*nativeLibraryDir=//')"
 if [ -z "${NATIVE_DIR}" ]; then
   NATIVE_DIR="$(adb shell dumpsys package "${APP_PACKAGE}" \
-    | tr -d '\r' | grep -oE '[^g]nativeLibraryDir=[^ ]+' | head -1 \
-    | sed 's/^[a-zA-Z]*nativeLibraryDir=//')"
+    | tr -d '\r' | grep -oE 'legacyNativeLibraryDir=[^[:space:]]+' | head -1 \
+    | sed 's/^legacyNativeLibraryDir=//')"
 fi
 echo "App nativeLibraryDir: ${NATIVE_DIR}"
-adb shell "ls -la ${NATIVE_DIR}" | tee "${ARTIFACTS}/native-lib-dir.txt"
-if ! adb shell "ls ${NATIVE_DIR}" | tr -d '\r' | grep -q "libqemu-system-x86_64.so"; then
-  echo "::error::libqemu-system-x86_64.so was NOT extracted into nativeLibraryDir (check useLegacyPackaging/extractNativeLibs)"
+adb shell "ls -la '${NATIVE_DIR}'" | tee "${ARTIFACTS}/native-lib-dir.txt"
+SO_PATH=""
+for d in "${NATIVE_DIR}" "${NATIVE_DIR}/${ANDROID_ARCH}"; do
+  if adb shell "ls '${d}'" | tr -d '\r' | grep -q "libqemu-system-x86_64.so"; then
+    SO_PATH="${d}/libqemu-system-x86_64.so"
+    break
+  fi
+done
+if [ -z "${SO_PATH}" ]; then
+  echo "::error::libqemu-system-x86_64.so was NOT extracted into nativeLibraryDir (checked '${NATIVE_DIR}' and '${NATIVE_DIR}/${ANDROID_ARCH}')"
   exit 1
 fi
-echo "* QEMU binary present in nativeLibraryDir" >> "${GITHUB_STEP_SUMMARY}"
+echo "QEMU executable on device: ${SO_PATH}"
+
+# Pre-validate that the packaged binary is executable in place — exactly
+# what QemuEngine will do via ProcessBuilder.
+adb shell "'${SO_PATH}' --version" 2>&1 | tee "${ARTIFACTS}/qemu-in-nativedir-version.txt" \
+  || { echo "::error::Packaged QEMU binary is not executable from nativeLibraryDir"; exit 1; }
+grep -q "QEMU emulator version" "${ARTIFACTS}/qemu-in-nativedir-version.txt" || {
+  echo "::error::Packaged QEMU binary did not report its version from nativeLibraryDir"
+  exit 1
+}
+echo "* QEMU binary present and executable in nativeLibraryDir" >> "${GITHUB_STEP_SUMMARY}"
 
 # Keep the setup wizard / keyguard out of the way.
 adb shell settings put global device_provisioned 1
