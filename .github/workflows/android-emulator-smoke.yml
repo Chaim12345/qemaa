@@ -1,12 +1,15 @@
 name: Android Emulator Test
 
 # Runs the real release APK (the one bundled with the cross-compiled QEMU
-# binary produced by "Android CI & QEMU Build") on a hardware-accelerated
-# Android 16 (API 36) x86_64 emulator:
-#   1. the bundled QEMU binary must execute standalone on the emulator,
-#   2. the APK must install and launch without crashing,
-#   3. tapping "Start" must actually spawn the QEMU process,
-#   4. QEMU must stay alive and (best-effort) print VM console output.
+# binaries produced by "Android CI & QEMU Build") on a hardware-accelerated
+# Android 16 (API 36) x86_64 emulator. This is the FULL test:
+#   1. the APK must bundle QEMU for BOTH host ABIs (x86_64 + arm64-v8a),
+#   2. the bundled QEMU binary must execute standalone on the emulator,
+#   3. the APK must install and launch without crashing,
+#   4. tapping "Start" must actually spawn the QEMU process,
+#   5. the Alpine guest must FULLY BOOT to its login prompt over QEMU's
+#      user-mode network (an initramfs emergency shell is a FAILURE),
+#   6. tapping "Stop" must terminate the QEMU process.
 on:
   workflow_dispatch:
   workflow_run:
@@ -32,7 +35,7 @@ env:
 
 jobs:
   emulator-test:
-    name: Install and run APK on Android emulator
+    name: Install, boot and stop the VM on an Android emulator
     # Auto-run only after a successful build; manual dispatch always runs.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest

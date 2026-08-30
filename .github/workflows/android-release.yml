@@ -1,0 +1,223 @@
+name: Tag & Release
+
+# Automatic release tagging (requested workflow: every APK that passes the
+# FULL emulator test gets tagged and published as a GitHub Release, so the
+# app can be installed from Releases instead of hunting CI artifacts).
+#
+# Chain: "Android CI & QEMU Build" -> "Android Emulator Test" -> THIS WORKFLOW.
+# Triggers when the emulator test completes successfully, resolves the build
+# run that produced the tested APK, and publishes:
+#   tag:   android-qemu-v<versionName>.<build run number>  (idempotent)
+#   asset: the release APK (QEMU for x86_64 + arm64-v8a, Alpine netboot assets)
+on:
+  workflow_run:
+    workflows: ["Android Emulator Test"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      emulator_run_id:
+        description: "Emulator Test run id whose build should be released (blank = latest green)"
+        required: false
+        default: ""
+
+concurrency:
+  group: tag-and-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  BUILD_WORKFLOW_NAME: "Android CI & QEMU Build"
+  TEST_WORKFLOW_NAME: "Android Emulator Test"
+  APK_ARTIFACT_NAME: linux-vm-release-apk
+  EVIDENCE_ARTIFACT_NAME: emulator-test-evidence
+
+jobs:
+  tag-and-release:
+    name: Tag the tested commit and publish the APK
+    # Only after a green emulator test, and only for branch builds (never PRs).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Resolve the tested commit and its build run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EMU_RUN_ID_INPUT: ${{ github.event.workflow_run.id }}
+          EMU_RUN_ID_MANUAL: ${{ github.event.inputs.emulator_run_id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emu_run_id="${EMU_RUN_ID_INPUT}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            emu_run_id="${EMU_RUN_ID_MANUAL}"
+            if [ -z "${emu_run_id}" ]; then
+              echo "No run id given: using the latest successful '${TEST_WORKFLOW_NAME}' run on the default branch."
+              emu_run_id="$(gh run list \
+                --workflow "${TEST_WORKFLOW_NAME}" \
+                --branch "${GITHUB_REF_NAME}" \
+                --status success \
+                --limit 1 \
+                --json databaseId \
+                --jq '.[0].databaseId')"
+            fi
+          fi
+          if [ -z "${emu_run_id}" ] || [ "${emu_run_id}" = "null" ]; then
+            echo "::error::Could not resolve the emulator test run."
+            exit 1
+          fi
+
+          emu_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${emu_run_id}")"
+          test_sha="$(echo "${emu_json}" | jq -r '.head_sha')"
+          test_branch="$(echo "${emu_json}" | jq -r '.head_branch')"
+          test_conclusion="$(echo "${emu_json}" | jq -r '.conclusion')"
+          echo "Emulator test run ${emu_run_id}: sha=${test_sha} branch=${test_branch} conclusion=${test_conclusion}"
+
+          if [ "${test_conclusion}" != "success" ]; then
+            echo "::error::Refusing to release: emulator test run ${emu_run_id} is '${test_conclusion}'."
+            exit 1
+          fi
+          if [ "${test_branch}" != "main" ] && [ "${test_branch}" != "master" ]; then
+            echo "Emulator test ran on branch '${test_branch}' — not a release candidate. Skipping."
+            echo "SKIP=true" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+
+          # Find the successful build run for that commit.
+          build_run_id="$(gh run list \
+            --workflow "${BUILD_WORKFLOW_NAME}" \
+            --commit "${test_sha}" \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')"
+          if [ -z "${build_run_id}" ] || [ "${build_run_id}" = "null" ]; then
+            echo "::error::No successful '${BUILD_WORKFLOW_NAME}' run found for commit ${test_sha}."
+            exit 1
+          fi
+          build_run_number="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${build_run_id}" --jq '.run_number')"
+          echo "Build run: id=${build_run_id} number=${build_run_number} sha=${test_sha}"
+
+          {
+            echo "EMU_RUN_ID=${emu_run_id}"
+            echo "BUILD_RUN_ID=${build_run_id}"
+            echo "BUILD_RUN_NUMBER=${build_run_number}"
+            echo "TEST_SHA=${test_sha}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Checkout the tested commit
+        if: env.SKIP != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TEST_SHA }}
+
+      - name: Read the app version
+        if: env.SKIP != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_name="$(sed -n 's/.*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)"
+          version_code="$(sed -n 's/.*versionCode[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)"
+          if [ -z "${version_name}" ] || [ -z "${version_code}" ]; then
+            echo "::error::Could not read versionName/versionCode from app/build.gradle.kts"
+            exit 1
+          fi
+          echo "VERSION_NAME=${version_name}" >> "${GITHUB_ENV}"
+          echo "VERSION_CODE=${version_code}" >> "${GITHUB_ENV}"
+          echo "App version: ${version_name} (code ${version_code})"
+
+      - name: Skip if this build was already released
+        if: env.SKIP != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="android-qemu-v${VERSION_NAME}.${BUILD_RUN_NUMBER}"
+          echo "TAG=${tag}" >> "${GITHUB_ENV}"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists — nothing to do."
+            echo "SKIP=true" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          echo "Will publish release ${tag}."
+
+      - name: Download the tested APK and test evidence
+        if: env.SKIP != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh run download "${BUILD_RUN_ID}" --name "${APK_ARTIFACT_NAME}" --dir release
+          ls -lh release
+
+          # Attach the strongest emulator-test evidence to the release.
+          mkdir -p evidence
+          if gh run download "${EMU_RUN_ID}" --name "${EVIDENCE_ARTIFACT_NAME}" --dir evidence 2>/dev/null; then
+            cp evidence/qemu-version.txt release/qemu-version.txt 2>/dev/null || true
+            cp evidence/screen-at-login.png release/emulator-screen-at-login.png 2>/dev/null || true
+            cp evidence/boot-progress.txt release/emulator-boot-progress.txt 2>/dev/null || true
+          fi
+          ls -lh release
+
+      - name: Compute checksums
+        if: env.SKIP != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum *.apk > SHA256SUMS 2>/dev/null || true
+          cat SHA256SUMS || true
+
+      - name: Create tag and GitHub Release
+        if: env.SKIP != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/release-notes.md <<'NOTES'
+          ## Linux VM (QEMU) — @TAG@
+
+          Built from commit `@SHA@` (build run #@BUILD_RUN_NUMBER@) and validated by the
+          [full emulator test](https://github.com/@REPO@/actions/runs/@EMU_RUN_ID@):
+          the app installs on an API 36 emulator, starts QEMU from `nativeLibraryDir`,
+          boots the Alpine guest **all the way to the login prompt** and stops the VM cleanly.
+
+          **What's inside the APK**
+          - QEMU 9.0.0 system emulator for **both device architectures**: `x86_64` and `arm64-v8a`
+            (packaged as native libraries, executed from `nativeLibraryDir` — required by Android 10+ W^X policy)
+          - Alpine Linux netboot kernel + initramfs, SeaBIOS/QEMU firmware
+          - The guest boots from the network (DHCP + `alpine_repo`) into a RAM-backed Alpine
+
+          Install `app-release.apk` on any 64-bit Android 16+ device. After tapping Start, the
+          first boot needs a few minutes (pure-software TCG emulation) and downloads the Alpine
+          base system over the network.
+          NOTES
+
+          sed -i \
+            -e "s|@TAG@|${TAG}|g" \
+            -e "s|@SHA@|${TEST_SHA}|g" \
+            -e "s|@BUILD_RUN_NUMBER@|${BUILD_RUN_NUMBER}|g" \
+            -e "s|@REPO@|${GITHUB_REPOSITORY}|g" \
+            -e "s|@EMU_RUN_ID@|${EMU_RUN_ID}|g" \
+            /tmp/release-notes.md
+
+          gh release create "${TAG}" \
+            --target "${TEST_SHA}" \
+            --title "Linux VM (QEMU) ${TAG}" \
+            --notes-file /tmp/release-notes.md \
+            --repo "${GITHUB_REPOSITORY}" \
+            release/*
+
+          echo "## Released ${TAG}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Published ${TAG} with the APK that passed the full emulator test." 

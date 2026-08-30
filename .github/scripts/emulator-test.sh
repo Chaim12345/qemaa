@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real emulator test for the QEMU Linux-VM app.
+# FULL emulator test for the QEMU Linux-VM app.
 #
 # Executed by the "Android Emulator Test" workflow via
 # reactivecircus/android-emulator-runner@v2, whose `script:` input is run
@@ -8,13 +8,19 @@
 # this file as a single command: `bash .github/scripts/emulator-test.sh`.
 #
 # Stages:
-#   1. The bundled QEMU binary must execute standalone on the emulator.
-#   2. The APK must install, with libqemu-system-x86_64.so extracted into
+#   1. APK must bundle the QEMU emulator for BOTH host ABIs (x86_64 +
+#      arm64-v8a). Android extracts only the device's primary ABI at install
+#      time — a single-ABI APK bricks every other arch ("Missing required
+#      assets: QEMU binary").
+#   2. The bundled x86_64 QEMU binary must execute standalone on the emulator.
+#   3. The APK must install, with libqemu-system-x86_64.so extracted into
 #      nativeLibraryDir (validates the exec fix for API 29+ W^X policy).
-#   3. The app must launch without crashing.
-#   4. Tapping "Start" must spawn the QEMU process.
-#   5. QEMU must stay alive for ~90s.
-#   6. VM console output is collected (best effort; TCG is slow).
+#   4. The app must launch without crashing.
+#   5. Tapping "Start" must spawn the QEMU process.
+#   6. The guest must FULLY BOOT: the Alpine netboot initramfs has to fetch
+#      packages over QEMU's user-mode network and reach the login prompt.
+#      (A boot that only lands in the initramfs emergency shell FAILS.)
+#   7. Tapping "Stop" must terminate the QEMU process.
 #
 # NOTE: no `set -o pipefail` here! grep -q exits at the first match and the
 # producer (unzip/adb) can then die with SIGPIPE (141), which pipefail would
@@ -33,17 +39,30 @@ echo "Testing APK: ${APK} ($(du -h "${APK}" | cut -f1))"
 
 SDK_LEVEL="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 echo "Emulator API level: ${SDK_LEVEL} (expected ${ANDROID_API_LEVEL})"
-echo "## Emulator test (API ${SDK_LEVEL})" >> "${GITHUB_STEP_SUMMARY}"
+echo "## FULL emulator test (API ${SDK_LEVEL})" >> "${GITHUB_STEP_SUMMARY}"
 
-# ── 1. Bundled QEMU binary must execute standalone on the emulator ──────────
-echo "=== [1/6] Standalone QEMU binary check ==="
-if ! unzip -l "${APK}" | grep -q "lib/${ANDROID_ARCH}/libqemu-system-x86_64.so"; then
-  echo "::error::APK does not contain lib/${ANDROID_ARCH}/libqemu-system-x86_64.so (was it built by an outdated workflow?)"
-  unzip -l "${APK}" | head -80 > "${ARTIFACTS}/apk-contents.txt" || true
-  exit 1
-fi
+dump_ui() {
+  adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
+  adb exec-out cat /sdcard/ui.xml 2>/dev/null || true
+}
+
+# ── 1. APK must contain the QEMU emulator for every supported host ABI ───────
+echo "=== [1/7] APK multi-ABI content check ==="
+for abi in x86_64 arm64-v8a; do
+  if ! unzip -l "${APK}" | grep -q "lib/${abi}/libqemu-system-x86_64.so"; then
+    echo "::error::APK does not contain lib/${abi}/libqemu-system-x86_64.so — devices of that ABI have no QEMU binary at all"
+    unzip -l "${APK}" | grep -E "lib/|assets/" | head -80 > "${ARTIFACTS}/apk-contents.txt" || true
+    exit 1
+  fi
+done
+echo "APK bundles QEMU for x86_64 and arm64-v8a."
+echo "* QEMU bundled for both host ABIs (x86_64 + arm64-v8a)" >> "${GITHUB_STEP_SUMMARY}"
+
 BIN_DIR="$(mktemp -d)"
 unzip -o -j "${APK}" "lib/${ANDROID_ARCH}/libqemu-system-x86_64.so" -d "${BIN_DIR}" >/dev/null
+
+# ── 2. Bundled QEMU binary must execute standalone on the emulator ──────────
+echo "=== [2/7] Standalone QEMU binary check ==="
 file "${BIN_DIR}/libqemu-system-x86_64.so" | tee "${ARTIFACTS}/qemu-binary-file.txt"
 adb push "${BIN_DIR}/libqemu-system-x86_64.so" /data/local/tmp/qemu-system-x86_64 >/dev/null
 adb shell "chmod 0755 /data/local/tmp/qemu-system-x86_64"
@@ -59,8 +78,8 @@ else
 fi
 echo "* Standalone QEMU binary: $(head -n1 "${ARTIFACTS}/qemu-version.txt")" >> "${GITHUB_STEP_SUMMARY}"
 
-# ── 2. Install the APK ───────────────────────────────────────────────────────
-echo "=== [2/6] Install APK ==="
+# ── 3. Install the APK ───────────────────────────────────────────────────────
+echo "=== [3/7] Install APK ==="
 adb install -r "${APK}" | tee "${ARTIFACTS}/adb-install.txt"
 grep -q "Success" "${ARTIFACTS}/adb-install.txt" || {
   echo "::error::adb install failed"
@@ -112,8 +131,8 @@ adb shell settings put secure user_setup_complete 1
 adb shell wm dismiss-keyguard || true
 adb shell input keyevent KEYCODE_WAKEUP || true
 
-# ── 3. Launch the app and verify it does not crash ──────────────────────────
-echo "=== [3/6] Launch app ==="
+# ── 4. Launch the app and verify it does not crash ──────────────────────────
+echo "=== [4/7] Launch app ==="
 adb logcat -c
 adb shell am start -W -n "${APP_PACKAGE}/${APP_ACTIVITY}" | tee "${ARTIFACTS}/am-start.txt"
 sleep 8
@@ -136,8 +155,8 @@ if adb logcat -d -b crash 2>/dev/null | grep -q "${APP_PACKAGE}"; then
 fi
 echo "* App launched OK (pid ${APP_PID})" >> "${GITHUB_STEP_SUMMARY}"
 
-# ── 4. Tap the "Start" button to boot the VM ────────────────────────────────
-echo "=== [4/6] Tap 'Start' to boot the VM ==="
+# ── 5. Tap the "Start" button to boot the VM ────────────────────────────────
+echo "=== [5/7] Tap 'Start' to boot the VM ==="
 cat > /tmp/ui_tap.py <<'PYEOF'
 import re
 import subprocess
@@ -180,8 +199,7 @@ if ! python3 /tmp/ui_tap.py "Start"; then
 fi
 cp /tmp/ui.xml "${ARTIFACTS}/ui-at-start-tap.xml" 2>/dev/null || true
 
-# ── 5. Wait for the QEMU process to appear ──────────────────────────────────
-echo "=== [5/6] Waiting for the QEMU process to appear ==="
+# ── 5b. Wait for the QEMU process to appear ─────────────────────────────────
 QEMU_STARTED=""
 for i in $(seq 1 72); do
   if adb shell "ps -A" | grep -q "qemu-system"; then
@@ -195,53 +213,124 @@ adb shell "ps -A" | grep "qemu-system" | tee "${ARTIFACTS}/qemu-ps.txt" || true
 
 if [ -z "${QEMU_STARTED}" ]; then
   echo "::error::The QEMU process never started after tapping Start"
-  adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
-  adb exec-out cat /sdcard/ui.xml > "${ARTIFACTS}/ui-no-qemu.xml" || true
+  dump_ui > "${ARTIFACTS}/ui-no-qemu.xml" || true
   adb exec-out screencap -p > "${ARTIFACTS}/screen-no-qemu.png" || true
   adb logcat -d > "${ARTIFACTS}/logcat-no-qemu.txt" || true
   exit 1
 fi
 echo "* QEMU process: $(cat "${ARTIFACTS}/qemu-ps.txt")" >> "${GITHUB_STEP_SUMMARY}"
 
-# ── 6. QEMU must stay alive; look for VM console output ─────────────────────
-echo "=== [6/6] QEMU stability and VM console output ==="
-ALIVE=0
-for i in $(seq 1 6); do
-  sleep 15
-  if adb shell "ps -A" | grep -q "qemu-system"; then
-    ALIVE=$((ALIVE + 1))
+# ── 6. FULL BOOT: the guest must reach the Alpine login prompt ──────────────
+echo "=== [6/7] Wait for full Alpine boot (login prompt) ==="
+# The Alpine netboot initramfs must DHCP via slirp, install alpine-base from
+# the network and hand over to openrc. A boot that stalls in the initramfs
+# emergency shell is a FAILURE (this is exactly the root=/dev/ram0 bug the
+# cmdline once had).
+BOOT_DEADLINE=$(( $(date +%s) + 600 ))   # up to 10 minutes (TCG is slow)
+BOOT_MARKER=""
+PROGRESS_FILE="${ARTIFACTS}/boot-progress.txt"
+: > "${PROGRESS_FILE}"
+LAST_UI="${ARTIFACTS}/ui-during-boot.xml"
+
+while [ "$(date +%s)" -lt "${BOOT_DEADLINE}" ]; do
+  dump_ui > "${LAST_UI}" || true
+
+  # Fatal error strings reported by the app UI -> fail immediately.
+  if grep -qiE "Failed to start QEMU|Missing required assets|Permission denied|Kernel panic|emergency recovery" \
+      "${LAST_UI}" 2>/dev/null; then
+    echo "::error::The app UI reports a QEMU/guest failure during boot:"
+    grep -oiE "Failed to start QEMU[^\"]*|Missing required assets[^\"]*|Permission denied[^\"]*|Kernel panic[^\"]*|emergency recovery[^\"]*" "${LAST_UI}" | head -5
+    adb exec-out screencap -p > "${ARTIFACTS}/screen-boot-failed.png" || true
+    adb logcat -d > "${ARTIFACTS}/logcat-boot-failed.txt" || true
+    exit 1
   fi
+
+  # Boot progress milestones (informational).
+  for marker in "SeaBIOS" "Booting from ROM" "Starting openrc" "Welcome to Alpine Linux"; do
+    if ! grep -qF "${marker}" "${PROGRESS_FILE}" 2>/dev/null; then
+      if grep -qF "${marker}" "${LAST_UI}" 2>/dev/null; then
+        echo "$(date -u +%H:%M:%S) milestone: ${marker}" | tee -a "${PROGRESS_FILE}"
+      fi
+    fi
+  done
+
+  # Success: the login prompt proves userspace came up.
+  if grep -qE "login:|Welcome to Alpine Linux" "${LAST_UI}" 2>/dev/null; then
+    BOOT_MARKER="yes"
+    break
+  fi
+
+  # If QEMU died mid-boot, fail early (two consecutive misses guard
+  # against a transient adb hiccup).
+  if ! adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+    sleep 5
+    if ! adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+      echo "::error::QEMU exited before the guest reached the login prompt"
+      dump_ui > "${ARTIFACTS}/ui-qemu-died-early.xml" || true
+      adb exec-out screencap -p > "${ARTIFACTS}/screen-qemu-died-early.png" || true
+      adb logcat -d > "${ARTIFACTS}/logcat-qemu-died-early.txt" || true
+      exit 1
+    fi
+  fi
+
+  sleep 20
 done
-echo "QEMU alive-checks: ${ALIVE}/6 (~90s window)"
-echo "* QEMU alive-checks: ${ALIVE}/6" >> "${GITHUB_STEP_SUMMARY}"
-if [ "${ALIVE}" -lt 5 ]; then
-  echo "::error::QEMU process exited shortly after starting (expected it to keep running)"
-  adb logcat -d > "${ARTIFACTS}/logcat-qemu-died.txt" || true
-  adb exec-out screencap -p > "${ARTIFACTS}/screen-qemu-died.png" || true
+
+cp "${LAST_UI}" "${ARTIFACTS}/ui-at-login.xml" 2>/dev/null || true
+adb exec-out screencap -p > "${ARTIFACTS}/screen-at-login.png" || true
+adb logcat -d > "${ARTIFACTS}/logcat-at-login.txt" || true
+
+if [ -z "${BOOT_MARKER}" ]; then
+  echo "::error::Guest did not reach the Alpine login prompt within 10 minutes (TCG)."
+  echo "Last visible terminal lines:"
+  grep -oE 'text="[^"]{5,}"' "${LAST_UI}" 2>/dev/null | tail -15 || true
+  cat "${PROGRESS_FILE}"
   exit 1
 fi
 
-# Give the (slow, TCG-emulated) Alpine kernel some time to print.
-sleep 30
-adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
-adb exec-out cat /sdcard/ui.xml > "${ARTIFACTS}/ui-after-boot.xml" || true
-adb exec-out screencap -p > "${ARTIFACTS}/screen-final.png" || true
-adb logcat -d > "${ARTIFACTS}/logcat-final.txt" || true
+echo "Guest fully booted to the Alpine login prompt."
+echo "* Guest boot: reached Alpine login prompt" >> "${GITHUB_STEP_SUMMARY}"
+cat "${PROGRESS_FILE}" >> "${GITHUB_STEP_SUMMARY}" || true
 
-if grep -qiE "Failed to start QEMU|Missing required assets|Permission denied" \
-    "${ARTIFACTS}/ui-after-boot.xml" 2>/dev/null; then
-  echo "::error::The app UI reports a QEMU start failure (see ui-after-boot.xml / screen-final.png)"
-  exit 1
-fi
-
-if grep -qiE "Welcome to Alpine|Alpine Linux|login:|IP-Config|Linux version|QEMU:" \
-    "${ARTIFACTS}/ui-after-boot.xml" 2>/dev/null; then
-  echo "VM console output detected in the app terminal."
-  echo "* VM console output: detected" >> "${GITHUB_STEP_SUMMARY}"
+# ── 7. Tap "Stop" and verify the QEMU process terminates ────────────────────
+echo "=== [7/7] Tap 'Stop' and verify QEMU exits ==="
+if ! python3 /tmp/ui_tap.py "Stop"; then
+  echo "::warning::'Stop' button not found — was the VM screen replaced?"
+  cp /tmp/ui.xml "${ARTIFACTS}/ui-no-stop-button.xml" 2>/dev/null || true
 else
-  echo "::warning::No VM console output visible yet (TCG emulation is slow); QEMU process confirmed alive."
-  echo "* VM console output: not visible yet (TCG is slow)" >> "${GITHUB_STEP_SUMMARY}"
+  STOPPED=""
+  for i in $(seq 1 12); do
+    if adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+      sleep 5
+    else
+      # Confirm the process is really gone (guards against adb hiccups).
+      sleep 3
+      if adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+        sleep 2
+      else
+        echo "QEMU process terminated ~$((i * 5))s after tapping Stop"
+        STOPPED="yes"
+        break
+      fi
+    fi
+  done
+  if [ -z "${STOPPED}" ]; then
+    echo "::error::QEMU process still running 60s after tapping Stop"
+    adb shell "ps -A" | grep "qemu-system" | tee "${ARTIFACTS}/qemu-ps-after-stop.txt" || true
+    dump_ui > "${ARTIFACTS}/ui-after-stop.xml" || true
+    adb exec-out screencap -p > "${ARTIFACTS}/screen-after-stop.png" || true
+    adb logcat -d > "${ARTIFACTS}/logcat-after-stop.txt" || true
+    exit 1
+  fi
+  echo "* Stop button: QEMU terminated cleanly" >> "${GITHUB_STEP_SUMMARY}"
 fi
 
-echo "SMOKE TEST PASSED"
-echo "* Result: PASS" >> "${GITHUB_STEP_SUMMARY}"
+# App must survive the whole cycle.
+if ! adb shell pidof "${APP_PACKAGE}" | grep -q .; then
+  echo "::error::App process died during the test"
+  adb logcat -d > "${ARTIFACTS}/logcat-app-died.txt" || true
+  exit 1
+fi
+
+echo "FULL TEST PASSED"
+echo "* Result: PASS (install -> start -> full guest boot -> stop)" >> "${GITHUB_STEP_SUMMARY}"

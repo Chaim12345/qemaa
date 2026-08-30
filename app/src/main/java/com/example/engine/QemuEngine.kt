@@ -44,11 +44,16 @@ class QemuEngine(
      * from which an app targeting API 29+ may exec() a file, because SELinux (W^X)
      * denies executing anything inside the app's writable data directory.
      *
+     * The APK bundles the emulator for every supported host ABI (x86_64 and
+     * arm64-v8a): Android extracts only the matching ABI's libraries at install
+     * time, so on any 64-bit device nativeLibraryDir contains an executable
+     * qemu-system-x86_64 that emulates an x86_64 PC via TCG.
+     *
      * Legacy fallback: builds that bundle the binary as an APK asset instead extract
      * it to filesDir. That only works when exec from app data is permitted (old
      * targetSdk levels); on modern targets it fails with "Permission denied".
      */
-    private fun resolveQemuBinary(): File {
+    internal fun resolveQemuBinary(): File {
         val nativeBinary = File(
             context.applicationInfo.nativeLibraryDir,
             "libqemu-system-x86_64.so"
@@ -229,10 +234,15 @@ class QemuEngine(
     /**
      * Validate that all required assets are present.
      */
-    private fun validateAssets() {
+    internal fun validateAssets() {
         val missing = mutableListOf<String>()
 
-        if (!qemuBinary.exists()) missing.add("QEMU binary")
+        if (!qemuBinary.exists()) {
+            // Name the device ABI so an APK that lacks it is immediately obvious
+            // (e.g. an x86_64-only build installed on an arm64 phone).
+            val deviceAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
+            missing.add("QEMU binary (no build bundled for this device's ABI: $deviceAbi)")
+        }
         if (!kernel.exists()) missing.add("Linux kernel")
         if (!initrd.exists()) missing.add("initramfs")
 
@@ -243,8 +253,19 @@ class QemuEngine(
 
     /**
      * Build QEMU command line with full system emulation.
+     *
+     * Guest cmdline notes (validated against the Alpine netboot initramfs):
+     * - NO root= parameter. With root=/dev/ram0 the initramfs tries to mount
+     *   /dev/ram0 as /sysroot, fails ("Invalid argument") and drops into an
+     *   emergency recovery shell instead of booting.
+     * - ip=dhcp + alpine_repo= activate the netboot path: the initramfs gets an
+     *   address via QEMU's user-mode NAT (slirp), installs alpine-base from the
+     *   repository into a RAM filesystem and boots it to the login prompt.
+     * - modloop is intentionally not fetched: the virtio drivers this VM needs
+     *   are built into the lts kernel, and remote modloop verification fails
+     *   noisily inside the initramfs.
      */
-    private fun buildQemuCommand(): List<String> {
+    internal fun buildQemuCommand(): List<String> {
         return listOf(
             qemuBinary.absolutePath,
             // Point QEMU at the extracted firmware (SeaBIOS, linuxboot ROMs,
@@ -252,7 +273,7 @@ class QemuEngine(
             "-L", pcbiosDir.absolutePath,
             "-kernel", kernel.absolutePath,
             "-initrd", initrd.absolutePath,
-            "-append", "root=/dev/ram0 console=ttyS0 quiet ip=dhcp alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/",
+            "-append", "console=ttyS0 quiet ip=dhcp alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/",
             "-m", "512",
             "-smp", "2",
             "-nographic",

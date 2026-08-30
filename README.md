@@ -37,13 +37,13 @@ A fully functional Android app that runs a real Linux virtual machine using QEMU
 
 ## How It Works
 
-1. **QEMU Cross-Compilation**: The GitHub Actions workflow downloads QEMU source code and cross-compiles it for Android using the Android NDK. All dependencies (zlib, libffi, pixman, glib) are also cross-compiled. The result is a static `qemu-system-x86_64` binary that runs natively on Android.
+1. **QEMU Cross-Compilation**: The GitHub Actions workflow downloads QEMU source code and cross-compiles it for Android using the Android NDK. All dependencies (zlib, libffi, pcre2, pixman, glib, libslirp) are also cross-compiled. The emulator is built **for both host ABIs** — `x86_64` and `arm64-v8a` — because Android only extracts the libraries matching the device's primary ABI at install time; a single-ABI APK would leave every other device without a QEMU binary. (The emulated machine is always an x86_64 PC — qemu-system-x86_64 emulates a PC on any 64-bit host via TCG.)
 
 2. **Alpine Linux Assets**: The workflow downloads Alpine Linux's netboot kernel (`vmlinuz-lts`) and initramfs (`initramfs-lts`). These are lightweight enough to boot entirely in RAM.
 
-3. **APK Bundling**: The QEMU binary, kernel, and initramfs are bundled as APK assets. When the app first runs, they're extracted to the app's private directory.
+3. **APK Bundling**: The QEMU executables are packaged as native libraries (`jniLibs/<abi>/libqemu-system-x86_64.so`, with `useLegacyPackaging` so the installer extracts them into `nativeLibraryDir`). Executables must live there because Android 10+ (API 29+) SELinux W^X policy denies `exec()` on anything inside the app's writable data directory. The kernel, initramfs and QEMU firmware ship as regular assets and are extracted on first run.
 
-4. **VM Execution**: When the user taps "Start", the app launches QEMU as a subprocess using Android's `ProcessBuilder`. QEMU boots Alpine Linux using software emulation (TCG), with the serial console connected to stdin/stdout pipes.
+4. **VM Execution**: When the user taps "Start", the app launches QEMU as a subprocess using Android's `ProcessBuilder`. The guest cmdline uses the Alpine netboot path (`ip=dhcp` + `alpine_repo=`; no `root=`): the initramfs gets an address via QEMU's user-mode network (slirp), installs the Alpine base system into a RAM filesystem and boots to the login prompt.
 
 5. **Terminal Integration**: The app reads QEMU's stdout and displays it in the terminal UI. User input from the terminal is written to QEMU's stdin, creating an interactive session.
 
@@ -60,11 +60,13 @@ git push origin main
 
 The workflow:
 1. Downloads Alpine Linux kernel + initramfs
-2. Cross-compiles QEMU for Android using Docker + NDK
-3. Bundles everything in the APK
+2. Cross-compiles QEMU for Android (x86_64 + arm64-v8a) using Docker + NDK
+3. Runs the unit tests and bundles everything in the APK
 4. Produces a signed APK artifact
+5. Runs the FULL emulator test on an API 36 x86_64 emulator (install -> start -> guest boots to the Alpine login prompt -> stop)
+6. On a green test, automatically tags `android-qemu-v<version>.<build>` and publishes the APK as a GitHub Release
 
-Download the APK from the Actions tab or Releases page.
+Download the APK from the Releases page (every release has passed the full emulator test) or from the Actions artifacts.
 
 ### Local Build
 
