@@ -26,7 +26,7 @@ class ExampleRobolectricTest {
   @Test
   fun `verify virtualization detector probe`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
-    val report = VirtualizationDetector.probeHardwareVirtualization(context)
+    val report = VirtualizationDetector.detect(context)
     assertNotNull(report)
     assertTrue("Physical CPU cores should be >= 1", report.physicalCpuCores >= 1)
     assertNotNull("Host kernel version must not be null", report.hostKernelVersion)
