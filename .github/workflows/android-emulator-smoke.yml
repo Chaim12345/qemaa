@@ -30,10 +30,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
-          java-version: "17"
+          java-version: "21"
           distribution: "temurin"
           cache: gradle
 
@@ -52,14 +52,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.13"
+          gradle-version: "9.3.1"
 
       - name: Ensure Gradle Wrapper
         shell: bash
         run: |
           set -euo pipefail
           if [ ! -f gradlew ]; then
-            gradle wrapper --gradle-version 8.13 --distribution-type bin
+            gradle wrapper --gradle-version 9.3.1 --distribution-type bin
           fi
           chmod +x gradlew
 
@@ -87,14 +87,19 @@ jobs:
             test -n "${apk}" || { echo "Error: debug APK not found"; exit 1; }
             echo "Using APK: ${apk}"
 
-            # Install and launch main activity
+            # Install and launch main activity.
+            # applicationId is "com.aistudio.linuxvm.qemu" but the MainActivity
+            # Kotlin class lives under namespace "com.example" (see app/build.gradle.kts),
+            # so the component must use the fully-qualified class name.
             adb install -r "${apk}"
-            adb shell am start -n "com.aistudio.linuxvm.qemu/.MainActivity" || {
+            adb shell am start -n "com.aistudio.linuxvm.qemu/com.example.MainActivity" || {
               echo "Warning: failed to start MainActivity";
               adb shell pm list packages | sed 's/^package://';
+              adb shell cmd package resolve-activity --brief com.aistudio.linuxvm.qemu || true;
               exit 1;
             }
 
-            # Basic smoke: wait a bit, then check logcat for app process/package
+            # Basic smoke: wait a bit, then check logcat for app process/package.
+            # Grep for both applicationId and namespace to be safe.
             sleep 30
-            adb logcat -d | grep -i "com.aistudio.linuxvm.qemu" || echo "No obvious app log entries; smoke test is best-effort."
+            adb logcat -d | grep -iE "com\.aistudio\.linuxvm\.qemu|com\.example" || echo "No obvious app log entries; smoke test is best-effort."
