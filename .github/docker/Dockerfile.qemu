@@ -147,34 +147,6 @@ RUN wget -q https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.43/
     && make -j$(nproc) \
     && make install
 
-# ── libiconv ────────────────────────────────────────────────────────────────
-# Android's bionic libc has no iconv, but glib's meson setup hard-requires it.
-# Build GNU libiconv statically and install it into the NDK sysroot so that
-# meson's iconv checks (header + -liconv) find it automatically.
-WORKDIR /build
-RUN wget -q https://ftp.gnu.org/gnu/libiconv/libiconv-1.17.tar.gz \
-    && tar xzf libiconv-1.17.tar.gz \
-    && cd libiconv-1.17 \
-    && TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
-    && SYSROOT=${TOOLCHAIN}/sysroot \
-    && case "${ANDROID_ABI}" in \
-         x86_64)    export HOST=x86_64-linux-android ;; \
-         arm64-v8a) export HOST=aarch64-linux-android ;; \
-       esac \
-    && ./configure \
-         --host=${HOST} \
-         --prefix=${SYSROOT}/usr \
-         --enable-static --disable-shared \
-         --disable-dependency-tracking \
-         CC=${CC} \
-         CXX=${CXX} \
-         AR=${TOOLCHAIN}/bin/llvm-ar \
-         RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
-         CFLAGS="--sysroot=${SYSROOT} -fPIC -DANDROID" \
-         LDFLAGS="--sysroot=${SYSROOT}" \
-    && make -j$(nproc) \
-    && make install
-
 # ── pixman ───────────────────────────────────────────────────────────────────
 WORKDIR /build
 RUN wget -q https://www.cairographics.org/releases/pixman-0.43.4.tar.gz \
