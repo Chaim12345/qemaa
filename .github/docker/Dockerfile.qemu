@@ -239,6 +239,7 @@ RUN wget -q https://download.gnome.org/sources/glib/2.80/glib-2.80.5.tar.xz \
          -Dselinux=disabled \
          -Dsysprof=disabled \
          -Dnls=disabled \
+         -Diconv=disabled \
          -Dglib_debug=disabled \
          -Dbsymbolic_functions=false \
          -Dxattr=false \
