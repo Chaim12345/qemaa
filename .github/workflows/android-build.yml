@@ -16,8 +16,8 @@ permissions:
 
 env:
   QEMU_VERSION: "9.0.0"
-  ANDROID_NDK_VERSION: "26b"
-  ANDROID_API: "24"
+  ANDROID_NDK_VERSION: "30-beta3"
+  ANDROID_API: "36"
   ANDROID_ABI: "x86_64"
   ALPINE_MIRROR: "https://dl-cdn.alpinelinux.org/alpine/latest-stable"
 

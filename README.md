@@ -110,7 +110,7 @@ qemu-system-x86_64 \
 ### Cross-Compilation Flags
 ```bash
 # Android NDK clang with bionic libc
-CC=aarch64-linux-android24-clang
+CC=aarch64-linux-android36-clang
 CFLAGS="-fPIC -DANDROID"
 LDFLAGS="-pie"
 
@@ -155,7 +155,7 @@ app/src/main/
 
 ## Requirements
 
-- Android 7.0+ (API 24)
+- Android 16+ (API 36)
 - 512MB+ free RAM (for VM)
 - ARM64 or x86_64 device
 

@@ -2,8 +2,8 @@ FROM ubuntu:22.04 AS builder
 
 ARG QEMU_VERSION=9.0.0
 ARG ANDROID_ABI=x86_64
-ARG NDK_VERSION=26b
-ARG ANDROID_API=24
+ARG NDK_VERSION=30-beta3
+ARG ANDROID_API=36
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ANDROID_ABI=${ANDROID_ABI}
@@ -82,12 +82,20 @@ ENV PKG_CONFIG_PATH=/android-prefix/lib/pkgconfig
 ENV PKG_CONFIG_LIBDIR=/android-prefix/lib/pkgconfig
 RUN mkdir -p ${PREFIX}
 
-# ── zlib (build with host gcc to avoid clang 17 -Werror issue) ──────────────
+# ── zlib (cross-compiled for Android with NDK clang; strip -Werror) ────────
 WORKDIR /build
 RUN wget -q https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz \
     && tar xzf zlib-1.3.1.tar.gz \
     && cd zlib-1.3.1 \
-    && CC=/usr/bin/gcc ./configure --prefix=${PREFIX} --static \
+    && sed -i 's/-Werror//g' configure \
+    && TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
+    && case "${ANDROID_ABI}" in x86_64) export CHOST=x86_64-linux-android ;; arm64-v8a) export CHOST=aarch64-linux-android ;; esac \
+    && CC=${CC} \
+       AR=${TOOLCHAIN}/bin/llvm-ar \
+       RANLIB=${TOOLCHAIN}/bin/llvm-ranlib \
+       CFLAGS="--sysroot=${TOOLCHAIN}/sysroot -fPIC" \
+       LDFLAGS="--sysroot=${TOOLCHAIN}/sysroot" \
+       ./configure --prefix=${PREFIX} --static \
     && make -j$(nproc) && make install
 
 # ── libffi ────────────────────────────────────────────────────────────────────
