@@ -15,7 +15,11 @@
 #   4. Tapping "Start" must spawn the QEMU process.
 #   5. QEMU must stay alive for ~90s.
 #   6. VM console output is collected (best effort; TCG is slow).
-set -euo pipefail
+#
+# NOTE: no `set -o pipefail` here! grep -q exits at the first match and the
+# producer (unzip/adb) can then die with SIGPIPE (141), which pipefail would
+# turn into a false failure even though the match was found.
+set -eu
 
 ARTIFACTS="${GITHUB_WORKSPACE}/emulator-artifacts"
 mkdir -p "${ARTIFACTS}"
