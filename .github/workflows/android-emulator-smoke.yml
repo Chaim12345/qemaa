@@ -1,105 +1,301 @@
-name: Android Emulator Smoke Test
+name: Android Emulator Test
 
+# Runs the real release APK (the one bundled with the cross-compiled QEMU
+# binary produced by "Android CI & QEMU Build") on a hardware-accelerated
+# Android 16 (API 36) x86_64 emulator:
+#   1. the bundled QEMU binary must execute standalone on the emulator,
+#   2. the APK must install and launch without crashing,
+#   3. tapping "Start" must actually spawn the QEMU process,
+#   4. QEMU must stay alive and (best-effort) print VM console output.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "app/**"
-      - "assets/**"
-      - ".github/docker/**"
+  workflow_run:
+    workflows: ["Android CI & QEMU Build"]
+    types: [completed]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-android-emulator
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  actions: read
 
 env:
-  ANDROID_API_LEVEL: 36
+  ANDROID_API_LEVEL: "36"
   ANDROID_TARGET: google_apis
   ANDROID_ARCH: x86_64
+  APP_PACKAGE: com.aistudio.linuxvm.qemu
+  APP_ACTIVITY: com.example.MainActivity
+  BUILD_WORKFLOW_NAME: "Android CI & QEMU Build"
+  APK_ARTIFACT_NAME: linux-vm-release-apk
 
 jobs:
-  emulator-smoke:
-    name: Run APK on Android emulator
+  emulator-test:
+    name: Install and run APK on Android emulator
+    # Auto-run only after a successful build; manual dispatch always runs.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: "21"
-          distribution: "temurin"
-          cache: gradle
+      - name: Download release APK from the build workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          TRIGGERING_RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="${TRIGGERING_RUN_ID}"
+          if [ -z "${run_id}" ] || [ "${run_id}" = "null" ]; then
+            echo "Manual dispatch: locating the latest successful '${BUILD_WORKFLOW_NAME}' run..."
+            run_id="$(gh run list \
+              --workflow "${BUILD_WORKFLOW_NAME}" \
+              --branch "${HEAD_BRANCH}" \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')"
+          fi
+          if [ -z "${run_id}" ] || [ "${run_id}" = "null" ]; then
+            echo "::error::Could not find a successful '${BUILD_WORKFLOW_NAME}' run; no APK to test."
+            exit 1
+          fi
+          echo "Downloading APK artifact '${APK_ARTIFACT_NAME}' from run ${run_id}"
+          mkdir -p apk
+          gh run download "${run_id}" --name "${APK_ARTIFACT_NAME}" --dir apk
+          ls -lh apk
 
-      - name: Setup Android SDK
+      - name: Enable KVM for the emulator
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: AVD cache
+      - name: Cache emulator system image
         uses: actions/cache@v4
-        id: avd-cache
+        with:
+          path: /usr/local/lib/android/sdk/system-images/android-36
+          key: sysimg-36-google_apis-x86_64-v1
+
+      - name: Cache AVD
+        uses: actions/cache@v4
         with:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_TARGET }}-${{ env.ANDROID_ARCH }}
+          key: avd-36-google_apis-x86_64-v1
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.3.1"
-
-      - name: Ensure Gradle Wrapper
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f gradlew ]; then
-            gradle wrapper --gradle-version 9.3.1 --distribution-type bin
-          fi
-          chmod +x gradlew
-
-      - name: Build debug APK (smoke)
-        run: ./gradlew assembleDebug --no-daemon --parallel --build-cache --stacktrace
-
-      - name: Run app on emulator
-        id: emulator-run
+      - name: Run app on emulator (API 36)
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ env.ANDROID_API_LEVEL }}
           target: ${{ env.ANDROID_TARGET }}
           arch: ${{ env.ANDROID_ARCH }}
-          avd-name: avd-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_TARGET }}-${{ env.ANDROID_ARCH }}
+          avd-name: qemu-api36
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 4096 -partition-size 8192 -qemu -cpu qemu64
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot -memory 3072
           disable-animations: true
-          emulator-boot-timeout: 900
           script: |
-            set -e
-            adb wait-for-device
+            set -euo pipefail
 
-            # Find the built debug APK
-            apk="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
-            test -n "${apk}" || { echo "Error: debug APK not found"; exit 1; }
-            echo "Using APK: ${apk}"
+            ARTIFACTS="${GITHUB_WORKSPACE}/emulator-artifacts"
+            mkdir -p "${ARTIFACTS}"
 
-            # Install and launch main activity.
-            # applicationId is "com.aistudio.linuxvm.qemu" but the MainActivity
-            # Kotlin class lives under namespace "com.example" (see app/build.gradle.kts),
-            # so the component must use the fully-qualified class name.
-            adb install -r "${apk}"
-            adb shell am start -n "com.aistudio.linuxvm.qemu/com.example.MainActivity" || {
-              echo "Warning: failed to start MainActivity";
-              adb shell pm list packages | sed 's/^package://';
-              adb shell cmd package resolve-activity --brief com.aistudio.linuxvm.qemu || true;
-              exit 1;
-            }
+            APK="$(find "${GITHUB_WORKSPACE}/apk" -maxdepth 2 -type f -name '*.apk' -print -quit)"
+            if [ -z "${APK}" ]; then
+              echo "::error::No APK found in the downloaded artifact"
+              exit 1
+            fi
+            echo "Testing APK: ${APK} ($(du -h "${APK}" | cut -f1))"
 
-            # Basic smoke: wait a bit, then check logcat for app process/package.
-            # Grep for both applicationId and namespace to be safe.
+            SDK_LEVEL="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+            echo "Emulator API level: ${SDK_LEVEL} (expected ${ANDROID_API_LEVEL})"
+            echo "## Emulator test (API ${SDK_LEVEL})" >> "${GITHUB_STEP_SUMMARY}"
+
+            # ── 1. Bundled QEMU binary must execute standalone on the emulator ──
+            echo "=== [1/6] Standalone QEMU binary check ==="
+            if ! unzip -l "${APK}" | grep -q "lib/${ANDROID_ARCH}/libqemu-system-x86_64.so"; then
+              echo "::error::APK does not contain lib/${ANDROID_ARCH}/libqemu-system-x86_64.so (was it built by an outdated workflow?)"
+              unzip -l "${APK}" | head -80 > "${ARTIFACTS}/apk-contents.txt" || true
+              exit 1
+            fi
+            BIN_DIR="$(mktemp -d)"
+            unzip -o -j "${APK}" "lib/${ANDROID_ARCH}/libqemu-system-x86_64.so" -d "${BIN_DIR}" >/dev/null
+            file "${BIN_DIR}/libqemu-system-x86_64.so" | tee "${ARTIFACTS}/qemu-binary-file.txt"
+            adb push "${BIN_DIR}/libqemu-system-x86_64.so" /data/local/tmp/qemu-system-x86_64 >/dev/null
+            adb shell "chmod 0755 /data/local/tmp/qemu-system-x86_64"
+            adb shell "ls -lh /data/local/tmp/qemu-system-x86_64"
+            if adb shell "/data/local/tmp/qemu-system-x86_64 --version" 2>&1 | tee "${ARTIFACTS}/qemu-version.txt"; then
+              grep -q "QEMU emulator version" "${ARTIFACTS}/qemu-version.txt" || {
+                echo "::error::QEMU binary ran but did not report its version"
+                exit 1
+              }
+            else
+              echo "::error::Bundled QEMU binary does not run on the emulator (API ${SDK_LEVEL})"
+              exit 1
+            fi
+            echo "* Standalone QEMU binary: $(head -n1 "${ARTIFACTS}/qemu-version.txt")" >> "${GITHUB_STEP_SUMMARY}"
+
+            # ── 2. Install the APK ──────────────────────────────────────────────
+            echo "=== [2/6] Install APK ==="
+            adb install -r "${APK}" | tee "${ARTIFACTS}/adb-install.txt"
+
+            # Keep the setup wizard / keyguard out of the way.
+            adb shell settings put global device_provisioned 1
+            adb shell settings put secure user_setup_complete 1
+            adb shell wm dismiss-keyguard || true
+            adb shell input keyevent KEYCODE_WAKEUP || true
+
+            # ── 3. Launch the app and verify it does not crash ──────────────────
+            echo "=== [3/6] Launch app ==="
+            adb logcat -c
+            adb shell am start -W -n "${APP_PACKAGE}/${APP_ACTIVITY}" | tee "${ARTIFACTS}/am-start.txt"
+            sleep 8
+            adb exec-out screencap -p > "${ARTIFACTS}/screen-after-launch.png" || true
+
+            APP_PID="$(adb shell pidof "${APP_PACKAGE}" | tr -d '\r')"
+            if [ -z "${APP_PID}" ]; then
+              echo "::error::App process died right after launch"
+              adb logcat -d > "${ARTIFACTS}/logcat-launch.txt" || true
+              exit 1
+            fi
+            echo "App process pid: ${APP_PID}"
+            adb shell dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedWindow" | head -2 \
+              | tee -a "${ARTIFACTS}/am-start.txt" || true
+
+            if adb logcat -d -b crash 2>/dev/null | grep -q "${APP_PACKAGE}"; then
+              echo "::error::App crashed at launch (see logcat-launch.txt)"
+              adb logcat -d > "${ARTIFACTS}/logcat-launch.txt" || true
+              exit 1
+            fi
+            echo "* App launched OK (pid ${APP_PID})" >> "${GITHUB_STEP_SUMMARY}"
+
+            # ── 4. Tap the "Start" button to boot the VM ────────────────────────
+            echo "=== [4/6] Tap 'Start' to boot the VM ==="
+            cat > /tmp/ui_tap.py <<'PYEOF'
+            import re
+            import subprocess
+            import sys
+            import time
+
+            label = sys.argv[1]
+            deadline = time.time() + 120
+
+            while time.time() < deadline:
+                subprocess.run(["adb", "shell", "uiautomator", "dump", "/sdcard/ui.xml"],
+                               capture_output=True, text=True)
+                time.sleep(1)
+                xml = subprocess.run(["adb", "exec-out", "cat", "/sdcard/ui.xml"],
+                                     capture_output=True, text=True).stdout or ""
+                if "<node" in xml:
+                    with open("/tmp/ui.xml", "w", encoding="utf-8") as f:
+                        f.write(xml)
+                    pattern = re.compile(
+                        r'<node[^>]*\btext="' + re.escape(label)
+                        + r'"[^>]*\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"')
+                    match = pattern.search(xml)
+                    if match:
+                        x = (int(match.group(1)) + int(match.group(3))) // 2
+                        y = (int(match.group(2)) + int(match.group(4))) // 2
+                        print("Tapping '{}' at ({},{})".format(label, x, y))
+                        subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)])
+                        sys.exit(0)
+                time.sleep(2)
+
+            print("::error::UI element with text '{}' not found within 120s".format(label))
+            sys.exit(1)
+            PYEOF
+
+            if ! python3 /tmp/ui_tap.py "Start"; then
+              cp /tmp/ui.xml "${ARTIFACTS}/ui-no-start-button.xml" 2>/dev/null || true
+              adb exec-out screencap -p > "${ARTIFACTS}/screen-no-start-button.png" || true
+              adb logcat -d > "${ARTIFACTS}/logcat-no-start-button.txt" || true
+              exit 1
+            fi
+            cp /tmp/ui.xml "${ARTIFACTS}/ui-at-start-tap.xml" 2>/dev/null || true
+
+            # ── 5. Wait for the QEMU process to appear ──────────────────────────
+            echo "=== [5/6] Waiting for the QEMU process to appear ==="
+            QEMU_STARTED=""
+            for i in $(seq 1 72); do
+              if adb shell "ps -A" | grep -q "qemu-system"; then
+                echo "QEMU process appeared after ~$((i * 5))s"
+                QEMU_STARTED="yes"
+                break
+              fi
+              sleep 5
+            done
+            adb shell "ps -A" | grep "qemu-system" | tee "${ARTIFACTS}/qemu-ps.txt" || true
+
+            if [ -z "${QEMU_STARTED}" ]; then
+              echo "::error::The QEMU process never started after tapping Start"
+              adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
+              adb exec-out cat /sdcard/ui.xml > "${ARTIFACTS}/ui-no-qemu.xml" || true
+              adb exec-out screencap -p > "${ARTIFACTS}/screen-no-qemu.png" || true
+              adb logcat -d > "${ARTIFACTS}/logcat-no-qemu.txt" || true
+              exit 1
+            fi
+            echo "* QEMU process: $(cat "${ARTIFACTS}/qemu-ps.txt")" >> "${GITHUB_STEP_SUMMARY}"
+
+            # ── 6. QEMU must stay alive; look for VM console output ─────────────
+            echo "=== [6/6] QEMU stability and VM console output ==="
+            ALIVE=0
+            for i in $(seq 1 6); do
+              sleep 15
+              if adb shell "ps -A" | grep -q "qemu-system"; then
+                ALIVE=$((ALIVE + 1))
+              fi
+            done
+            echo "QEMU alive-checks: ${ALIVE}/6 (~90s window)"
+            echo "* QEMU alive-checks: ${ALIVE}/6" >> "${GITHUB_STEP_SUMMARY}"
+            if [ "${ALIVE}" -lt 5 ]; then
+              echo "::error::QEMU process exited shortly after starting (expected it to keep running)"
+              adb logcat -d > "${ARTIFACTS}/logcat-qemu-died.txt" || true
+              adb exec-out screencap -p > "${ARTIFACTS}/screen-qemu-died.png" || true
+              exit 1
+            fi
+
+            # Give the (slow, TCG-emulated) Alpine kernel some time to print.
             sleep 30
-            adb logcat -d | grep -iE "com\.aistudio\.linuxvm\.qemu|com\.example" || echo "No obvious app log entries; smoke test is best-effort."
+            adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
+            adb exec-out cat /sdcard/ui.xml > "${ARTIFACTS}/ui-after-boot.xml" || true
+            adb exec-out screencap -p > "${ARTIFACTS}/screen-final.png" || true
+            adb logcat -d > "${ARTIFACTS}/logcat-final.txt" || true
+
+            if grep -qiE "Failed to start QEMU|Missing required assets|Permission denied" \
+                "${ARTIFACTS}/ui-after-boot.xml" 2>/dev/null; then
+              echo "::error::The app UI reports a QEMU start failure (see ui-after-boot.xml / screen-final.png)"
+              exit 1
+            fi
+
+            if grep -qiE "Welcome to Alpine|Alpine Linux|login:|IP-Config|Linux version|QEMU:" \
+                "${ARTIFACTS}/ui-after-boot.xml" 2>/dev/null; then
+              echo "VM console output detected in the app terminal."
+              echo "* VM console output: detected" >> "${GITHUB_STEP_SUMMARY}"
+            else
+              echo "::warning::No VM console output visible yet (TCG emulation is slow); QEMU process confirmed alive."
+              echo "* VM console output: not visible yet (TCG is slow)" >> "${GITHUB_STEP_SUMMARY}"
+            fi
+
+            echo "SMOKE TEST PASSED"
+            echo "* Result: PASS" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-test-evidence
+          path: emulator-artifacts/
+          if-no-files-found: warn
+          retention-days: 7

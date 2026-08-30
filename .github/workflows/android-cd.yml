@@ -60,18 +60,21 @@ jobs:
           cache-from: type=gha,scope=qemu-android-x86_64
           cache-to: type=gha,mode=max,scope=qemu-android-x86_64
 
-      - name: Copy QEMU binary into Android assets
+      - name: Copy QEMU binary into native libs (jniLibs)
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p app/src/main/assets/qemu
+          # The QEMU executable is packaged as a native library so the installer
+          # extracts it into nativeLibraryDir. Apps targeting API 29+ cannot
+          # exec() files from their writable data directory.
+          mkdir -p app/src/main/jniLibs/x86_64
           container_id="$(docker create "qemu-android-builder:${GITHUB_SHA}")"
           trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
           docker cp "${container_id}:/qemu/qemu-system-x86_64" \
-            app/src/main/assets/qemu/qemu-system-x86_64
-          chmod 0755 app/src/main/assets/qemu/qemu-system-x86_64
-          file app/src/main/assets/qemu/qemu-system-x86_64
-          test -s app/src/main/assets/qemu/qemu-system-x86_64
+            app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so
+          chmod 0755 app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so
+          file app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so
+          test -s app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so
 
       - name: Download Alpine Linux VM assets
         shell: bash
@@ -137,7 +140,8 @@ jobs:
           set -euo pipefail
           apk="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
           test -n "${apk}"
-          unzip -l "${apk}" | grep -E 'assets/(qemu/qemu-system-x86_64|alpine/(vmlinuz-lts|initramfs-lts))$'
+          unzip -l "${apk}" | grep -E 'lib/x86_64/libqemu-system-x86_64\.so$'
+          unzip -l "${apk}" | grep -E 'assets/alpine/(vmlinuz-lts|initramfs-lts)$'
 
       - name: Create GitHub Release for tag
         uses: softprops/action-gh-release@v2

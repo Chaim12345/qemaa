@@ -21,7 +21,7 @@ class QemuEngine(
     }
 
     private val qemuBinary: File by lazy {
-        File(workDir, "qemu-system-x86_64")
+        resolveQemuBinary()
     }
 
     private val kernel: File by lazy {
@@ -30,6 +30,39 @@ class QemuEngine(
 
     private val initrd: File by lazy {
         File(workDir, "initramfs-lts")
+    }
+
+    /**
+     * Resolve the QEMU executable location.
+     *
+     * Preferred source: the binary is packaged as a native library (jniLibs), so the
+     * package installer extracts it into nativeLibraryDir. This is the only location
+     * from which an app targeting API 29+ may exec() a file, because SELinux (W^X)
+     * denies executing anything inside the app's writable data directory.
+     *
+     * Legacy fallback: builds that bundle the binary as an APK asset instead extract
+     * it to filesDir. That only works when exec from app data is permitted (old
+     * targetSdk levels); on modern targets it fails with "Permission denied".
+     */
+    private fun resolveQemuBinary(): File {
+        val nativeBinary = File(
+            context.applicationInfo.nativeLibraryDir,
+            "libqemu-system-x86_64.so"
+        )
+        if (nativeBinary.exists() && nativeBinary.length() > 0L) {
+            return nativeBinary
+        }
+
+        val assetBinary = File(workDir, "qemu-system-x86_64")
+        if (!assetBinary.exists() || assetBinary.length() == 0L) {
+            try {
+                extractAsset(context.assets, "qemu/qemu-system-x86_64", assetBinary)
+                assetBinary.setExecutable(true)
+            } catch (_: Exception) {
+                // validateAssets() reports the missing binary with a clear message.
+            }
+        }
+        return assetBinary
     }
 
     /**
@@ -160,11 +193,8 @@ class QemuEngine(
     private suspend fun extractAssetsIfNeeded() = withContext(Dispatchers.IO) {
         val assets = context.assets
 
-        // Extract QEMU binary
-        if (!qemuBinary.exists() || qemuBinary.length() == 0L) {
-            extractAsset(assets, "qemu/qemu-system-x86_64", qemuBinary)
-            qemuBinary.setExecutable(true)
-        }
+        // The QEMU binary itself is resolved from nativeLibraryDir (see
+        // resolveQemuBinary); only the kernel and initramfs are extracted here.
 
         // Extract kernel
         if (!kernel.exists() || kernel.length() == 0L) {

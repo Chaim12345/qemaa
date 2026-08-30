@@ -69,6 +69,18 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+
+  packaging {
+    jniLibs {
+      // The QEMU executable ships as a native library
+      // (app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so) so that the installer
+      // extracts it into the app's nativeLibraryDir. Executables must live there
+      // because Android 10+ (API 29+) denies exec() on files inside the app's
+      // writable data directory. useLegacyPackaging forces install-time extraction,
+      // which is required for the binary to be executable from nativeLibraryDir.
+      useLegacyPackaging = true
+    }
+  }
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
