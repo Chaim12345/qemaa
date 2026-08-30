@@ -261,6 +261,14 @@ class QemuEngine(
      * - ip=dhcp + alpine_repo= activate the netboot path: the initramfs gets an
      *   address via QEMU's user-mode NAT (slirp), installs alpine-base from the
      *   repository into a RAM filesystem and boots it to the login prompt.
+     * - dns0/dns1 pin EXTERNAL resolvers (fields 8 and 9 of ip=). The DNS
+     *   server that slirp's DHCP hands out (10.0.2.3) is a virtual forwarder
+     *   that reads /etc/resolv.conf on the HOST — which does not exist on
+     *   Android, so name resolution silently fails there (apk then aborts with
+     *   "updating and opening <repo>"). Explicit 8.8.8.8/1.1.1.1 entries make
+     *   the guest query real servers through slirp's UDP NAT instead. musl
+     *   falls back past the dead first entry (validated: Alpine boots with two
+     *   unreachable nameservers ahead of a working one).
      * - modloop is intentionally not fetched: the virtio drivers this VM needs
      *   are built into the lts kernel, and remote modloop verification fails
      *   noisily inside the initramfs.
@@ -273,7 +281,7 @@ class QemuEngine(
             "-L", pcbiosDir.absolutePath,
             "-kernel", kernel.absolutePath,
             "-initrd", initrd.absolutePath,
-            "-append", "console=ttyS0 quiet ip=dhcp alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/",
+            "-append", "console=ttyS0 quiet ip=dhcp:::::::8.8.8.8:1.1.1.1 alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/",
             "-m", "512",
             "-smp", "2",
             "-nographic",

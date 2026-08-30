@@ -61,6 +61,55 @@ echo "* QEMU bundled for both host ABIs (x86_64 + arm64-v8a)" >> "${GITHUB_STEP_
 BIN_DIR="$(mktemp -d)"
 unzip -o -j "${APK}" "lib/${ANDROID_ARCH}/libqemu-system-x86_64.so" -d "${BIN_DIR}" >/dev/null
 
+# ── 1b. Standalone netboot probe (diagnostic, non-fatal) ────────────────────
+# Boots the bundled kernel/initramfs with the bundled QEMU directly from the
+# shell (no app involved) using the same guest cmdline the app uses. This
+# isolates Android-environment problems (slirp DNS, network) from app problems
+# and its serial log lands in the evidence artifact either way.
+echo "=== [1b/7] Standalone netboot probe (diagnostic) ==="
+unzip -o -j "${APK}" "assets/alpine/vmlinuz-lts" "assets/alpine/initramfs-lts" -d "${BIN_DIR}" >/dev/null
+unzip -o -j "${APK}" "assets/qemu/pc-bios/*" -d "${BIN_DIR}/pc-bios" >/dev/null
+adb push "${BIN_DIR}/vmlinuz-lts" "${BIN_DIR}/initramfs-lts" /data/local/tmp/ >/dev/null
+adb shell "rm -rf /data/local/tmp/netboot-pc-bios; mkdir -p /data/local/tmp/netboot-pc-bios"
+adb push "${BIN_DIR}/pc-bios/." /data/local/tmp/netboot-pc-bios/ >/dev/null
+adb push "${BIN_DIR}/libqemu-system-x86_64.so" /data/local/tmp/qemu-system-x86_64 >/dev/null
+adb shell "chmod 0755 /data/local/tmp/qemu-system-x86_64"
+adb shell "rm -f /data/local/tmp/netboot.log"
+adb shell "nohup /data/local/tmp/qemu-system-x86_64 \
+  -L /data/local/tmp/netboot-pc-bios \
+  -kernel /data/local/tmp/vmlinuz-lts \
+  -initrd /data/local/tmp/initramfs-lts \
+  -append 'console=ttyS0 quiet ip=dhcp:::::::8.8.8.8:1.1.1.1 alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/' \
+  -m 512 -smp 2 -nographic -serial stdio -monitor none \
+  -net nic,model=virtio -net user,hostfwd=tcp::2222-:22 \
+  -no-reboot -nodefaults > /data/local/tmp/netboot.log 2>&1 &"
+NETBOOT_PROBE=""
+for i in $(seq 1 30); do
+  sleep 10
+  LOG_NOW="$(adb shell cat /data/local/tmp/netboot.log 2>/dev/null | tr -d '\r' || true)"
+  if echo "${LOG_NOW}" | grep -q "login:"; then
+    echo "Standalone netboot reached the login prompt after ~$((i * 10))s."
+    NETBOOT_PROBE="ok"
+    break
+  fi
+  if echo "${LOG_NOW}" | grep -q "emergency recovery shell"; then
+    echo "::warning::Standalone netboot dropped into the emergency recovery shell (see netboot-standalone.log)"
+    NETBOOT_PROBE="emergency-shell"
+    break
+  fi
+done
+adb shell "pkill -f qemu-system-x86_64" >/dev/null 2>&1 || true
+sleep 2
+adb shell cat /data/local/tmp/netboot.log 2>/dev/null | tr -d '\r' > "${ARTIFACTS}/netboot-standalone.log" || true
+adb shell "rm -f /data/local/tmp/netboot.log /data/local/tmp/vmlinuz-lts /data/local/tmp/initramfs-lts; rm -rf /data/local/tmp/netboot-pc-bios" >/dev/null 2>&1 || true
+if [ "${NETBOOT_PROBE}" = "ok" ]; then
+  echo "* Standalone netboot: reached login prompt" >> "${GITHUB_STEP_SUMMARY}"
+elif [ -z "${NETBOOT_PROBE}" ]; then
+  echo "::warning::Standalone netboot probe timed out after 300s (TCG is slow); see netboot-standalone.log"
+else
+  echo "::warning::Standalone netboot failed: ${NETBOOT_PROBE}; the app test below will tell the full story"
+fi
+
 # ── 2. Bundled QEMU binary must execute standalone on the emulator ──────────
 echo "=== [2/7] Standalone QEMU binary check ==="
 file "${BIN_DIR}/libqemu-system-x86_64.so" | tee "${ARTIFACTS}/qemu-binary-file.txt"

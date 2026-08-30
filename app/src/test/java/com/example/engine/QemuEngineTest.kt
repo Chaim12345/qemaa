@@ -102,6 +102,10 @@ class QemuEngineTest {
     assertFalse("must not pass root=/dev/ram0: $cmdline", cmdline.contains("root=/dev/ram0"))
     // Netboot path: DHCP over slirp + package install from the Alpine repo.
     assertTrue("must request DHCP: $cmdline", cmdline.contains("ip=dhcp"))
+    // External DNS must be pinned (fields 8/9 of ip=): slirp's virtual DNS
+    // (10.0.2.3) depends on a host /etc/resolv.conf, which Android lacks.
+    assertTrue("must pin external DNS servers: $cmdline",
+      cmdline.contains("8.8.8.8") && cmdline.contains("1.1.1.1"))
     assertTrue("must point at the Alpine repository: $cmdline",
       cmdline.contains("alpine_repo=http"))
     assertTrue("must use the serial console: $cmdline", cmdline.contains("console=ttyS0"))
