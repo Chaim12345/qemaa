@@ -23,7 +23,7 @@ import kotlin.io.path.createTempDirectory
  *     drop into an emergency shell instead of booting.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [36])
 class QemuEngineTest {
 
   private fun tempDir(): File = createTempDirectory("qemu-engine-test").toFile()
