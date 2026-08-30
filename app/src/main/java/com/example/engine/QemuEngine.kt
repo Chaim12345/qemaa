@@ -32,6 +32,10 @@ class QemuEngine(
         File(workDir, "initramfs-lts")
     }
 
+    private val pcbiosDir: File by lazy {
+        File(workDir, "pc-bios").apply { mkdirs() }
+    }
+
     /**
      * Resolve the QEMU executable location.
      *
@@ -206,6 +210,20 @@ class QemuEngine(
             extractAsset(assets, "alpine/initramfs-lts", initrd)
         }
 
+        // Extract the QEMU firmware directory (flat set of BIOS/ROM files).
+        // Firmware is plain data — reading it from app storage is fine; only
+        // executing files there is restricted.
+        val firmwareFiles = assets.list("qemu/pc-bios") ?: emptyArray()
+        if (firmwareFiles.isEmpty()) {
+            throw IllegalStateException("Missing required assets: QEMU firmware (qemu/pc-bios)")
+        }
+        for (name in firmwareFiles) {
+            val dest = File(pcbiosDir, name)
+            if (!dest.exists() || dest.length() == 0L) {
+                extractAsset(assets, "qemu/pc-bios/$name", dest)
+            }
+        }
+
     }
 
     /**
@@ -229,6 +247,9 @@ class QemuEngine(
     private fun buildQemuCommand(): List<String> {
         return listOf(
             qemuBinary.absolutePath,
+            // Point QEMU at the extracted firmware (SeaBIOS, linuxboot ROMs,
+            // virtio option ROM) — without -L it cannot find bios-256k.bin.
+            "-L", pcbiosDir.absolutePath,
             "-kernel", kernel.absolutePath,
             "-initrd", initrd.absolutePath,
             "-append", "root=/dev/ram0 console=ttyS0 quiet ip=dhcp alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/",

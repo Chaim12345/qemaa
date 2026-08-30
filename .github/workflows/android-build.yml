@@ -62,7 +62,7 @@ jobs:
           cache-from: type=gha,scope=qemu-android-x86_64
           cache-to: type=gha,mode=max,scope=qemu-android-x86_64
 
-      - name: Copy QEMU binary into native libs (jniLibs)
+      - name: Copy QEMU binary and firmware into the repo
         shell: bash
         run: |
           set -euo pipefail
@@ -70,7 +70,7 @@ jobs:
           # extracts it into nativeLibraryDir. Apps targeting API 29+ cannot
           # exec() files from their writable data directory, so the binary must
           # NOT be shipped as a plain asset.
-          mkdir -p app/src/main/jniLibs/x86_64
+          mkdir -p app/src/main/jniLibs/x86_64 app/src/main/assets/qemu
           container_id="$(docker create "qemu-android-builder:${GITHUB_SHA}")"
           trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
           docker cp "${container_id}:/qemu/qemu-system-x86_64" \
@@ -78,6 +78,14 @@ jobs:
           chmod 0755 app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so
           file app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so
           test -s app/src/main/jniLibs/x86_64/libqemu-system-x86_64.so
+
+          # Firmware (SeaBIOS + linuxboot ROMs + virtio option ROM) ships as
+          # regular assets; QEMU receives the extracted dir via -L at runtime.
+          docker cp "${container_id}:/qemu/pc-bios" app/src/main/assets/qemu/
+          ls -la app/src/main/assets/qemu/pc-bios | head -25
+          test -s app/src/main/assets/qemu/pc-bios/bios-256k.bin
+          test -s app/src/main/assets/qemu/pc-bios/linuxboot_dma.bin
+          test -s app/src/main/assets/qemu/pc-bios/efi-virtio.rom
 
       - name: Download Alpine Linux VM assets
         shell: bash
@@ -147,6 +155,7 @@ jobs:
           # QEMU must be under lib/x86_64/ (install-time extraction -> nativeLibraryDir)
           unzip -l "${apk}" | grep -E 'lib/x86_64/libqemu-system-x86_64\.so$'
           unzip -l "${apk}" | grep -E 'assets/alpine/(vmlinuz-lts|initramfs-lts)$'
+          unzip -l "${apk}" | grep -E 'assets/qemu/pc-bios/(bios-256k\.bin|linuxboot_dma\.bin|efi-virtio\.rom)$'
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
