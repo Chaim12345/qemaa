@@ -272,6 +272,23 @@ RUN printf '%s\n' \
     && ${CC} -c android_stubs.c -o android_stubs.o \
     && ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar rcs ${PREFIX}/lib/libdl.a android_stubs.o
 
+# ── libslirp ──────────────────────────────────────────────────────────────────
+# QEMU's user-mode networking backend (-net user). QEMU 9.0 looks up slirp via
+# pkg-config only (no subproject fallback), so it must be installed into the
+# prefix. Uses the GitHub mirror because gitlab.freedesktop.org archive URLs
+# are served behind an anti-bot interstitial.
+WORKDIR /build
+RUN wget -q https://github.com/qemu/libslirp/archive/refs/tags/v4.8.0.tar.gz -O libslirp.tar.gz \
+    && tar xzf libslirp.tar.gz \
+    && meson setup /build/libslirp-build /build/libslirp-4.8.0 \
+         --cross-file /build/android-cross.txt \
+         --prefix=${PREFIX} \
+         --buildtype=release \
+         -Ddefault_library=static \
+         --wrap-mode=nodownload \
+    && meson compile -C /build/libslirp-build -j$(nproc) \
+    && meson install -C /build/libslirp-build
+
 # ── QEMU ─────────────────────────────────────────────────────────────────────
 WORKDIR /qemu
 RUN wget -q https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz \
@@ -320,7 +337,8 @@ RUN TOOLCHAIN=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64 \
     && file /qemu/build/qemu-system-x86_64 \
     && readelf -lW /qemu/build/qemu-system-x86_64 | grep -q "/system/bin/linker64" \
     && readelf -dW /qemu/build/qemu-system-x86_64 | grep -q NEEDED \
-    && echo "qemu binary sanity: OK (dynamically linked against bionic)"
+    && nm /qemu/build/qemu-system-x86_64 | grep -q "slirp_new" \
+    && echo "qemu binary sanity: OK (dynamically linked against bionic, slirp enabled)"
 
 # ── Final image ───────────────────────────────────────────────────────────────
 FROM ubuntu:22.04
