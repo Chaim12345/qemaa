@@ -385,5 +385,253 @@ if ! adb shell pidof "${APP_PACKAGE}" | grep -q .; then
   exit 1
 fi
 
+echo "Netboot phase passed. Continuing to the prebuilt-distro phases."
+
+# ── 8. Standalone distro probe: boot the prebuilt image, verify toolchain ───
+# Boots the distro image with the bundled QEMU using the EXACT arguments the
+# app uses in DISK mode, waits for the autologin shell and types version
+# checks for node/npm/go/pi/opencode over the serial console. This proves the
+# prebuilt distro ships a working toolchain before it is released.
+DISTRO_DIR_HOST="${GITHUB_WORKSPACE}/distro"
+DISTRO_IMG_GZ="$(find "${DISTRO_DIR_HOST}" -maxdepth 1 -type f -name 'linux-vm-rootfs.img.gz' -print -quit 2>/dev/null || true)"
+if [ -n "${DISTRO_IMG_GZ}" ]; then
+  echo "=== [8/9] Standalone distro probe ==="
+  adb shell "mkdir -p /data/local/tmp/distro"
+  adb push "${DISTRO_DIR_HOST}/linux-vm-vmlinuz-lts" "${DISTRO_DIR_HOST}/linux-vm-initramfs-lts" /data/local/tmp/distro/ >/dev/null
+  adb push "${DISTRO_IMG_GZ}" /data/local/tmp/distro/linux-vm-rootfs.img.gz >/dev/null
+  # Decompress on the emulator (a raw push would be 3 GB over adb).
+  adb shell "gunzip -f /data/local/tmp/distro/linux-vm-rootfs.img.gz"
+  adb shell "ls -lh /data/local/tmp/distro" | tee "${ARTIFACTS}/distro-files.txt"
+  adb shell "test -s /data/local/tmp/distro/rootfs.img"
+
+  # Re-create the firmware dir (cleaned up after the netboot probe).
+  adb shell "rm -rf /data/local/tmp/netboot-pc-bios; mkdir -p /data/local/tmp/netboot-pc-bios"
+  adb push "${BIN_DIR}/pc-bios/." /data/local/tmp/netboot-pc-bios/ >/dev/null
+
+  # QEMU with a FIFO on stdin so the test can type into the serial console.
+  adb shell "rm -f /data/local/tmp/distro.in /data/local/tmp/distro.log"
+  adb shell "mkfifo /data/local/tmp/distro.in"
+  adb shell "nohup sh -c 'cat /data/local/tmp/distro.in | /data/local/tmp/qemu-system-x86_64 \
+    -L /data/local/tmp/netboot-pc-bios \
+    -kernel /data/local/tmp/distro/linux-vm-vmlinuz-lts \
+    -initrd /data/local/tmp/distro/linux-vm-initramfs-lts \
+    -append \"console=ttyS0 root=/dev/vda rw\" \
+    -accel tcg,thread=multi -cpu max -smp 2 -m 768 -rtc base=utc \
+    -nographic -serial stdio -monitor none \
+    -net nic,model=virtio -net user,hostfwd=tcp::2222-:22 \
+    -drive file=/data/local/tmp/distro/rootfs.img,format=raw,if=virtio,cache=writeback \
+    -device virtio-rng-pci -no-reboot -nodefaults \
+    > /data/local/tmp/distro.log 2>&1' >/dev/null 2>&1 &"
+  # Persistent FIFO writer so later writes do not see EOF (18 min lifetime).
+  adb shell "nohup sh -c 'exec 3>/data/local/tmp/distro.in; sleep 1080' >/dev/null 2>&1 &"
+
+  distro_type() {
+    adb shell "printf '%s\n' \"$1\" > /data/local/tmp/distro.in" >/dev/null 2>&1 || true
+  }
+  distro_log() {
+    adb shell cat /data/local/tmp/distro.log 2>/dev/null | tr -d '\r' || true
+  }
+
+  # Wait for the autologin shell (motd banner is unique to the distro).
+  DISTRO_PROMPT=""
+  for i in $(seq 1 60); do
+    sleep 10
+    LOG_NOW="$(distro_log)"
+    if echo "${LOG_NOW}" | grep -q "root@linuxvm"; then
+      echo "Distro reached the autologin shell after ~$((i * 10))s."
+      DISTRO_PROMPT="yes"
+      break
+    fi
+    if echo "${LOG_NOW}" | grep -qi "Kernel panic"; then
+      echo "::error::Distro kernel panicked (see distro-boot.log)"
+      break
+    fi
+  done
+  if [ "${DISTRO_PROMPT}" = "yes" ]; then
+    echo "* Standalone distro: booted to root shell" >> "${GITHUB_STEP_SUMMARY}"
+    sleep 3
+    distro_type 'echo PROBE_START; node -v; npm -v; go version; echo PI_VERSION_MARKER; pi --version; echo OPENCODE_VERSION_MARKER; opencode --version; echo PROBE_DONE'
+    PROBE_DONE=""
+    for i in $(seq 1 36); do
+      sleep 10
+      if distro_log | grep -q "PROBE_DONE"; then PROBE_DONE="yes"; break; fi
+    done
+    distro_log | tail -60 > "${ARTIFACTS}/distro-probe.log"
+    if [ -z "${PROBE_DONE}" ]; then
+      echo "::error::Distro toolchain probe timed out (see distro-probe.log)"
+      adb shell "pkill -f qemu-system-x86_64" >/dev/null 2>&1 || true
+      exit 1
+    fi
+    PROBE_SECTION="$(distro_log | sed -n '/PROBE_START/,/PROBE_DONE/p')"
+    echo "${PROBE_SECTION}" | tee "${ARTIFACTS}/distro-toolchain.txt"
+    echo "${PROBE_SECTION}" | grep -Eq 'node|v[0-9]+\.[0-9]+' \
+      || { echo "::error::node did not report a version"; exit 1; }
+    echo "${PROBE_SECTION}" | grep -q 'go version go1' \
+      || { echo "::error::go toolchain missing"; exit 1; }
+    if echo "${PROBE_SECTION}" | grep -q 'not found'; then
+      echo "::error::A preinstalled tool is missing on PATH (see distro-toolchain.txt)"
+      exit 1
+    fi
+    echo "* Distro toolchain: node, npm, go, pi and opencode all verified" >> "${GITHUB_STEP_SUMMARY}"
+    distro_type 'sync; poweroff -f'
+  else
+    distro_log | tail -80 > "${ARTIFACTS}/distro-boot.log"
+    adb shell "pkill -f qemu-system-x86_64" >/dev/null 2>&1 || true
+    echo "::error::Distro image did not boot to the root shell (see distro-boot.log)"
+    exit 1
+  fi
+  sleep 3
+  adb shell "pkill -f qemu-system-x86_64" >/dev/null 2>&1 || true
+else
+  echo "::warning::No distro artifact found — skipping the distro phases."
+fi
+
+# ── 9. In-app distro boot (debug APK + seeded image) ────────────────────────
+# Seeds the app's private distro directory via run-as on the DEBUG build
+# (release builds are not debuggable), then verifies the app boots the
+# persistent image: QEMU must run with -drive rootfs.img and root=/dev/vda,
+# the guest must reach its shell, and Stop must terminate it.
+DEBUG_APK="$(find "${GITHUB_WORKSPACE}/apk-debug" -maxdepth 2 -type f -name '*.apk' -print -quit 2>/dev/null || true)"
+if [ -n "${DISTRO_IMG_GZ}" ] && [ -n "${DEBUG_APK}" ] \
+  && adb shell "test -d /data/local/tmp/distro" >/dev/null 2>&1 \
+  && [ "$(adb shell "test -f /data/local/tmp/distro/rootfs.img && echo ok" | tr -d '\r')" = "ok" ]; then
+  echo "=== [9/9] In-app distro boot (debug APK, seeded image) ==="
+  adb shell "pkill -f qemu-system-x86_64" >/dev/null 2>&1 || true
+  adb uninstall "${APP_PACKAGE}" >/dev/null 2>&1 || true
+  adb install -r "${DEBUG_APK}" | tee "${ARTIFACTS}/adb-install-debug.txt"
+  grep -q "Success" "${ARTIFACTS}/adb-install-debug.txt" || {
+    echo "::error::debug APK install failed"; exit 1; }
+
+  # Seed files/qemu/distro through run-as.
+  adb shell "run-as ${APP_PACKAGE} mkdir -p files/qemu/distro"
+  adb shell "run-as ${APP_PACKAGE} cp /data/local/tmp/distro/linux-vm-vmlinuz-lts files/qemu/distro/vmlinuz-lts"
+  adb shell "run-as ${APP_PACKAGE} cp /data/local/tmp/distro/linux-vm-initramfs-lts files/qemu/distro/initramfs-lts"
+  adb shell "run-as ${APP_PACKAGE} sh -c 'cp /data/local/tmp/distro/rootfs.img files/qemu/distro/rootfs.img'"
+  adb shell "run-as ${APP_PACKAGE} ls -la files/qemu/distro" | tee "${ARTIFACTS}/distro-seeded.txt"
+  adb shell "run-as ${APP_PACKAGE} sh -c 'test \$(stat -c%s files/qemu/distro/rootfs.img) -gt 67108864'"
+
+  adb logcat -c
+  adb shell am start -W -n "${APP_PACKAGE}/${APP_ACTIVITY}" | tee "${ARTIFACTS}/am-start-debug.txt"
+  sleep 8
+
+  # The banner must acknowledge the installed distro.
+  BANNER_OK=""
+  for i in $(seq 1 10); do
+    dump_ui > "${ARTIFACTS}/ui-distro-banner.xml" || true
+    if grep -q "Distro ready" "${ARTIFACTS}/ui-distro-banner.xml" 2>/dev/null; then
+      BANNER_OK="yes"; break
+    fi
+    sleep 3
+  done
+  if [ -z "${BANNER_OK}" ]; then
+    echo "::error::App did not recognize the seeded distro (no 'Distro ready' banner)"
+    adb exec-out screencap -p > "${ARTIFACTS}/screen-no-distro-banner.png" || true
+    adb logcat -d > "${ARTIFACTS}/logcat-no-distro-banner.txt" || true
+    exit 1
+  fi
+
+  python3 /tmp/ui_tap.py "Start" || {
+    echo "::error::Could not tap Start in the distro phase"
+    exit 1
+  }
+
+  # QEMU must come up WITH the disk image attached.
+  DISK_QEMU_ARGS=""
+  for i in $(seq 1 72); do
+    sleep 5
+    QEMU_ARGS_NOW="$(adb shell "ps -A -o ARGS" 2>/dev/null | tr -d '\r' | grep 'qemu-system-x86_64' | head -1 || true)"
+    if echo "${QEMU_ARGS_NOW}" | grep -q "rootfs.img"; then
+      DISK_QEMU_ARGS="${QEMU_ARGS_NOW}"
+      break
+    fi
+  done
+  if [ -z "${DISK_QEMU_ARGS}" ]; then
+    echo "::error::QEMU never started with the distro disk attached"
+    adb shell "ps -A -o ARGS" | grep qemu-system | tee "${ARTIFACTS}/qemu-ps-distro.txt" || true
+    dump_ui > "${ARTIFACTS}/ui-no-distro-qemu.xml" || true
+    adb logcat -d > "${ARTIFACTS}/logcat-no-distro-qemu.txt" || true
+    exit 1
+  fi
+  echo "${DISK_QEMU_ARGS}" > "${ARTIFACTS}/qemu-distro-cmdline.txt"
+  echo "${DISK_QEMU_ARGS}" | grep -q "root=/dev/vda" || {
+    echo "::error::QEMU runs but without root=/dev/vda (see qemu-distro-cmdline.txt)"; exit 1; }
+  echo "${DISK_QEMU_ARGS}" | grep -q "if=virtio" || {
+    echo "::error::rootfs not attached as virtio (see qemu-distro-cmdline.txt)"; exit 1; }
+  echo "* In-app distro boot: QEMU running with the persistent disk" >> "${GITHUB_STEP_SUMMARY}"
+
+  # Wait for the guest shell. Success = shell prompt in the terminal UI, or
+  # (equivalently) sshd answering on the hostfwd port — the distro runs sshd.
+  DISTRO_BOOTED=""
+  BOOT_DEADLINE=$(( $(date +%s) + 600 ))
+  while [ "$(date +%s)" -lt "${BOOT_DEADLINE}" ]; do
+    dump_ui > "${ARTIFACTS}/ui-during-distro-boot.xml" || true
+    if grep -qE "root@linuxvm" "${ARTIFACTS}/ui-during-distro-boot.xml" 2>/dev/null; then
+      DISTRO_BOOTED="prompt"; break
+    fi
+    SSH_BANNER="$(adb shell 'echo | nc -w 2 127.0.0.1 2222 2>/dev/null' | tr -d '\r' || true)"
+    if echo "${SSH_BANNER}" | grep -q "SSH-"; then
+      DISTRO_BOOTED="sshd"; break
+    fi
+    if grep -qiE "Kernel panic|Failed to start QEMU|Missing required assets" \
+        "${ARTIFACTS}/ui-during-distro-boot.xml" 2>/dev/null; then
+      echo "::error::Distro boot failed in-app (see ui-during-distro-boot.xml)"
+      adb exec-out screencap -p > "${ARTIFACTS}/screen-distro-boot-failed.png" || true
+      adb logcat -d > "${ARTIFACTS}/logcat-distro-boot-failed.txt" || true
+      exit 1
+    fi
+    if ! adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+      sleep 5
+      if ! adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+        echo "::error::QEMU exited during distro boot"
+        adb logcat -d > "${ARTIFACTS}/logcat-distro-qemu-died.txt" || true
+        exit 1
+      fi
+    fi
+    sleep 15
+  done
+  adb exec-out screencap -p > "${ARTIFACTS}/screen-distro-booted.png" || true
+  adb logcat -d > "${ARTIFACTS}/logcat-distro-booted.txt" || true
+  if [ -z "${DISTRO_BOOTED}" ]; then
+    echo "::error::Distro guest did not reach its shell within 10 minutes"
+    exit 1
+  fi
+  echo "* In-app distro boot: guest reached the shell (via ${DISTRO_BOOTED})" >> "${GITHUB_STEP_SUMMARY}"
+
+  # Stop must terminate QEMU (also exercises graceful disk flush).
+  python3 /tmp/ui_tap.py "Stop" || {
+    echo "::warning::'Stop' button not found in the distro phase"
+  }
+  STOPPED_D=""
+  for i in $(seq 1 24); do
+    if adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+      sleep 5
+    else
+      sleep 3
+      if adb shell "ps -A" 2>/dev/null | grep -q "qemu-system"; then
+        sleep 2
+      else
+        echo "Distro QEMU terminated ~$((i * 5))s after tapping Stop"
+        STOPPED_D="yes"
+        break
+      fi
+    fi
+  done
+  if [ -z "${STOPPED_D}" ]; then
+    echo "::error::QEMU still running 120s after tapping Stop (distro phase)"
+    exit 1
+  fi
+  echo "* Distro Stop: QEMU terminated cleanly" >> "${GITHUB_STEP_SUMMARY}"
+
+  if ! adb shell pidof "${APP_PACKAGE}" | grep -q .; then
+    echo "::error::App process died during the distro test"
+    exit 1
+  fi
+
+  # Cleanup: remove the 3 GB image from the emulator data partition.
+  adb shell "rm -rf /data/local/tmp/distro /data/local/tmp/distro.in /data/local/tmp/distro.log" || true
+else
+  echo "::warning::Skipping the in-app distro boot (missing image or debug APK)."
+fi
+
 echo "FULL TEST PASSED"
-echo "* Result: PASS (install -> start -> full guest boot -> stop)" >> "${GITHUB_STEP_SUMMARY}"
+echo "* Result: PASS (install -> netboot boot -> stop -> distro probe -> in-app distro boot -> stop)" >> "${GITHUB_STEP_SUMMARY}"

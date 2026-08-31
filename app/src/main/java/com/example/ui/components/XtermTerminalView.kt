@@ -4,23 +4,20 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,36 +31,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.TouchApp
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,17 +56,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.example.engine.TerminalLine
 import com.example.ui.theme.CyberBackground
 import com.example.ui.theme.CyberBorder
 import com.example.ui.theme.CyberSurface
@@ -101,7 +78,9 @@ import com.example.ui.theme.TerminalPurple
 import com.example.ui.theme.TerminalRed
 import com.example.ui.theme.TerminalWhite
 import com.example.ui.theme.TerminalYellow
-import org.json.JSONObject
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.collect
+import org.json.JSONTokener
 
 enum class XtermTheme(val id: String, val label: String, val dotColor: Color) {
   CYBER("cyber", "Cyber Neon", TerminalCyan),
@@ -112,33 +91,23 @@ enum class XtermTheme(val id: String, val label: String, val dotColor: Color) {
   SOLARIZED("solarized", "Solarized", Color(0xFF2AA198))
 }
 
+/**
+ * JS -> Kotlin bridge for the real xterm.js terminal.
+ * All payloads are base64-framed UTF-8 so every byte (and every escape
+ * sequence) survives the boundary exactly as the guest produced it.
+ */
 class TerminalJsBridge(
-  private val onCommand: (String) -> Unit,
-  private val onTabKey: (String) -> Unit,
-  private val onCtrlCKey: () -> Unit,
-  private val onBufferChanged: (String) -> Unit,
-  private val onReadyCallback: (cols: Int, rows: Int) -> Unit
+  private val onData: (String) -> Unit,
+  private val onReadyCallback: (cols: Int, rows: Int) -> Unit,
+  private val onResized: (cols: Int, rows: Int) -> Unit,
+  private val onModifiersChanged: (ctrl: Boolean, alt: Boolean) -> Unit,
+  private val onFontSizeChanged: (px: Int) -> Unit
 ) {
   private val mainHandler = Handler(Looper.getMainLooper())
 
   @JavascriptInterface
-  fun onCommand(command: String) {
-    mainHandler.post { onCommand(command) }
-  }
-
-  @JavascriptInterface
-  fun onTab(currentBuffer: String) {
-    mainHandler.post { onTabKey(currentBuffer) }
-  }
-
-  @JavascriptInterface
-  fun onCtrlC() {
-    mainHandler.post { onCtrlCKey() }
-  }
-
-  @JavascriptInterface
-  fun onBufferChange(buffer: String) {
-    mainHandler.post { onBufferChanged(buffer) }
+  fun onData(base64Data: String) {
+    mainHandler.post { onData(base64Data) }
   }
 
   @JavascriptInterface
@@ -148,109 +117,120 @@ class TerminalJsBridge(
 
   @JavascriptInterface
   fun onResize(cols: Int, rows: Int) {
-    // Resize notification
+    mainHandler.post { onResized(cols, rows) }
   }
-}
 
-enum class MobileKeypadCategory(val title: String) {
-  CORE("Terminal"),
-  DEV("Dev & Code"),
-  UNIX("Pipes & Files")
+  @JavascriptInterface
+  fun onModifiersChanged(ctrl: Boolean, alt: Boolean) {
+    mainHandler.post { onModifiersChanged(ctrl, alt) }
+  }
+
+  @JavascriptInterface
+  fun onFontSizeChanged(px: Int) {
+    mainHandler.post { onFontSizeChanged(px) }
+  }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun XtermTerminalView(
-  terminalLines: List<TerminalLine>,
-  activePrompt: String,
-  terminalInput: String,
+  terminalChunks: SharedFlow<String>,
   fontSizeSp: Int,
-  onInputChange: (String) -> Unit,
-  onSendCommand: (String?) -> Unit,
-  onClearTerminal: () -> Unit,
-  onIncreaseFontSize: () -> Unit,
-  onDecreaseFontSize: () -> Unit,
-  onKeyTab: () -> Unit,
-  onKeyCtrlC: () -> Unit,
-  onKeyHistoryPrev: () -> Unit,
-  onKeyHistoryNext: () -> Unit,
-  onInsertText: (String) -> Unit,
+  onTerminalData: (String) -> Unit,
+  onTerminalResized: (cols: Int, rows: Int) -> Unit,
+  onFontSizeChanged: (sp: Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
   var webViewInstance by remember { mutableStateOf<WebView?>(null) }
   var isTerminalReady by remember { mutableStateOf(false) }
-  var lastRenderedLineCount by remember { mutableIntStateOf(0) }
   var selectedTheme by remember { mutableStateOf(XtermTheme.CYBER) }
   var showThemeSelector by remember { mutableStateOf(false) }
-  var termDimensions by remember { mutableStateOf("80x24") }
+  var termDimensions by remember { mutableStateOf("—") }
+  var showExtraKeys by remember { mutableStateOf(true) }
+  var ctrlActive by remember { mutableStateOf(false) }
+  var altActive by remember { mutableStateOf(false) }
   val clipboardManager = LocalClipboardManager.current
 
-  var showMobileInputBar by remember { mutableStateOf(true) }
-  var selectedCategory by remember { mutableStateOf(MobileKeypadCategory.CORE) }
-  var isCtrlLocked by remember { mutableStateOf(false) }
-  var isAltLocked by remember { mutableStateOf(false) }
+  // Chunks that arrive before the WebView finished loading are buffered and
+  // flushed in one shot once xterm.js reports ready.
+  val pendingChunks = remember { ArrayDeque<String>() }
+
+  fun pushModifiers(ctrl: Boolean, alt: Boolean) {
+    webViewInstance?.evaluateJavascript("window.termSetModifiers($ctrl, $alt);", null)
+  }
+
+  fun sendKey(name: String) {
+    webViewInstance?.evaluateJavascript("window.termSendKey('$name');", null)
+  }
+
+  fun sendLiteral(text: String) {
+    val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    webViewInstance?.evaluateJavascript("window.termSendLiteral('$b64');", null)
+  }
 
   val bridge = remember {
     TerminalJsBridge(
-      onCommand = { cmd -> onSendCommand(cmd) },
-      onTabKey = { _ -> onKeyTab() },
-      onCtrlCKey = { onKeyCtrlC() },
-      onBufferChanged = { buffer -> onInputChange(buffer) },
+      onData = { b64 -> onTerminalData(b64) },
       onReadyCallback = { cols, rows ->
         isTerminalReady = true
         termDimensions = "${cols}x${rows}"
+        onTerminalResized(cols, rows)
+      },
+      onResized = { cols, rows ->
+        termDimensions = "${cols}x${rows}"
+        onTerminalResized(cols, rows)
+      },
+      onModifiersChanged = { ctrl, alt ->
+        ctrlActive = ctrl
+        altActive = alt
+      },
+      onFontSizeChanged = { px ->
+        // The header state is in sp; the terminal reports px (1.15 ratio).
+        onFontSizeChanged(((px / 1.15f).toInt()).coerceIn(8, 28))
       }
     )
   }
 
-  // Update prompt in Xterm.js when active prompt changes
-  LaunchedEffect(activePrompt, isTerminalReady) {
-    if (isTerminalReady && webViewInstance != null) {
-      val safePrompt = JSONObject.quote(activePrompt)
-      webViewInstance?.evaluateJavascript("window.xtermSetPrompt($safePrompt);", null)
-    }
-  }
-
-  // Update font size in Xterm.js
-  LaunchedEffect(fontSizeSp, isTerminalReady) {
-    if (isTerminalReady && webViewInstance != null) {
-      val px = (fontSizeSp * 1.15).toInt().coerceIn(10, 24)
-      webViewInstance?.evaluateJavascript("window.xtermSetFontSize($px);", null)
-    }
-  }
-
-  // Sync terminal lines incrementally into Xterm.js
-  LaunchedEffect(terminalLines, isTerminalReady) {
-    if (!isTerminalReady || webViewInstance == null) return@LaunchedEffect
-
-    if (terminalLines.isEmpty()) {
-      lastRenderedLineCount = 0
-      webViewInstance?.evaluateJavascript("window.xtermClear();", null)
-      return@LaunchedEffect
-    }
-
-    if (terminalLines.size < lastRenderedLineCount) {
-      webViewInstance?.evaluateJavascript("window.xtermClear();", null)
-      lastRenderedLineCount = 0
-    }
-
-    val newLines = terminalLines.drop(lastRenderedLineCount)
-    if (newLines.isNotEmpty()) {
-      val jsBuilder = StringBuilder()
-      for (line in newLines) {
-        val ansiText = convertToAnsi(line)
-        val safeJson = JSONObject.quote(ansiText)
-        jsBuilder.append("window.xtermWriteln($safeJson);\n")
+  // Stream guest output into xterm.js as it arrives. Base64 (NO_WRAP) only
+  // contains [A-Za-z0-9+/=], so it is safe to inline in a JS string literal.
+  LaunchedEffect(Unit) {
+    terminalChunks.collect { chunk ->
+      val webView = webViewInstance
+      if (isTerminalReady && webView != null) {
+        webView.evaluateJavascript("window.termWrite(\"$chunk\");", null)
+      } else {
+        if (pendingChunks.size > 400) pendingChunks.removeFirst()
+        pendingChunks.addLast(chunk)
       }
-      webViewInstance?.evaluateJavascript(jsBuilder.toString(), null)
-      lastRenderedLineCount = terminalLines.size
     }
   }
 
-  // Theme switch effect
+  // Flush buffered output once the terminal is ready.
+  LaunchedEffect(isTerminalReady) {
+    if (isTerminalReady && pendingChunks.isNotEmpty()) {
+      val js = buildString {
+        while (pendingChunks.isNotEmpty()) {
+          append("window.termWrite(\"")
+          append(pendingChunks.removeFirst())
+          append("\");")
+        }
+      }
+      webViewInstance?.evaluateJavascript(js, null)
+    }
+  }
+
+  // Font size sync (Kotlin is the source of truth for the header buttons).
+  LaunchedEffect(fontSizeSp, isTerminalReady) {
+    if (isTerminalReady) {
+      val px = (fontSizeSp * 1.15f).toInt().coerceIn(9, 32)
+      webViewInstance?.evaluateJavascript("window.termSetFontSize($px);", null)
+    }
+  }
+
+  // Theme sync.
   LaunchedEffect(selectedTheme, isTerminalReady) {
-    if (isTerminalReady && webViewInstance != null) {
-      webViewInstance?.evaluateJavascript("window.xtermSetTheme('${selectedTheme.id}');", null)
+    if (isTerminalReady) {
+      webViewInstance?.evaluateJavascript("window.termSetTheme('${selectedTheme.id}');", null)
     }
   }
 
@@ -259,7 +239,7 @@ fun XtermTerminalView(
       .fillMaxSize()
       .background(CyberBackground)
   ) {
-    // Modern Mobile Terminal Header Bar
+    // Terminal header: window dots, size, theme, copy/paste, zoom, keyboard toggle.
     Surface(
       modifier = Modifier.fillMaxWidth(),
       color = CyberSurface,
@@ -268,21 +248,19 @@ fun XtermTerminalView(
       Row(
         modifier = Modifier
           .fillMaxWidth()
-          .padding(horizontal = 10.dp, vertical = 6.dp),
+          .padding(horizontal = 10.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(6.dp)
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-          // Terminal Window Dots
           Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFF5F56)))
             Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFFBD2E)))
             Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF27C93F)))
           }
-
           Text(
             text = "xterm.js",
             color = PrimaryCyan,
@@ -290,7 +268,6 @@ fun XtermTerminalView(
             fontWeight = FontWeight.Bold,
             fontFamily = TerminalFontFamily
           )
-
           Box(
             modifier = Modifier
               .clip(RoundedCornerShape(4.dp))
@@ -306,62 +283,97 @@ fun XtermTerminalView(
           }
         }
 
-        // Action Toolbar (Theme, Zoom +/-, Toggle Mobile Keyboard Bar, Clear)
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(2.dp)
+          horizontalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-          // Toggle input toolbar
+          // Copy selection (falls back to nothing when empty).
           IconButton(
-            onClick = { showMobileInputBar = !showMobileInputBar },
+            onClick = {
+              webViewInstance?.evaluateJavascript("(function(){return window.termGetSelection();})()") { result ->
+                val text = result?.let { JSONTokener(it).nextValue() as? String } ?: ""
+                if (text.isNotEmpty()) {
+                  clipboardManager.setText(AnnotatedString(text))
+                }
+              }
+            },
+            modifier = Modifier.size(32.dp).testTag("xterm_copy")
+          ) {
+            Icon(
+              imageVector = Icons.Default.ContentCopy,
+              contentDescription = "Copy selection",
+              tint = TerminalDimText,
+              modifier = Modifier.size(16.dp)
+            )
+          }
+
+          // Paste clipboard into the terminal (bracketed paste via xterm).
+          IconButton(
+            onClick = {
+              val text = clipboardManager.getText()?.text ?: ""
+              if (text.isNotEmpty()) {
+                val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                webViewInstance?.evaluateJavascript("window.termPaste('$b64');", null)
+              }
+            },
+            modifier = Modifier.size(32.dp).testTag("xterm_paste")
+          ) {
+            Icon(
+              imageVector = Icons.Default.ContentPaste,
+              contentDescription = "Paste into terminal",
+              tint = TerminalDimText,
+              modifier = Modifier.size(16.dp)
+            )
+          }
+
+          // Extra keys row toggle.
+          IconButton(
+            onClick = { showExtraKeys = !showExtraKeys },
             modifier = Modifier.size(32.dp).testTag("xterm_toggle_input")
           ) {
             Icon(
               imageVector = Icons.Default.Keyboard,
-              contentDescription = "Toggle Virtual Mobile Keyboard",
-              tint = if (showMobileInputBar) SecondaryEmerald else TerminalDimText,
+              contentDescription = "Toggle extra keys",
+              tint = if (showExtraKeys) SecondaryEmerald else TerminalDimText,
               modifier = Modifier.size(17.dp)
             )
           }
 
-          // Theme button
+          // Theme.
           IconButton(
             onClick = { showThemeSelector = !showThemeSelector },
             modifier = Modifier.size(32.dp).testTag("xterm_theme_button")
           ) {
             Icon(
               imageVector = Icons.Default.Palette,
-              contentDescription = "Switch Terminal Theme",
+              contentDescription = "Switch terminal theme",
               tint = selectedTheme.dotColor,
               modifier = Modifier.size(16.dp)
             )
           }
 
-          // Font controls
+          // Zoom.
           IconButton(
-            onClick = onDecreaseFontSize,
+            onClick = { onFontSizeChanged(fontSizeSp - 2) },
             modifier = Modifier.size(32.dp).testTag("xterm_font_dec")
           ) {
             Text("A-", color = TerminalWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = TerminalFontFamily)
           }
-
           IconButton(
-            onClick = onIncreaseFontSize,
+            onClick = { onFontSizeChanged(fontSizeSp + 2) },
             modifier = Modifier.size(32.dp).testTag("xterm_font_inc")
           ) {
             Text("A+", color = PrimaryCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = TerminalFontFamily)
           }
 
+          // Clear screen.
           IconButton(
-            onClick = {
-              onClearTerminal()
-              webViewInstance?.evaluateJavascript("window.xtermClear();", null)
-            },
+            onClick = { webViewInstance?.evaluateJavascript("window.termClear();", null) },
             modifier = Modifier.size(32.dp).testTag("xterm_clear_btn")
           ) {
             Icon(
               imageVector = Icons.Default.Clear,
-              contentDescription = "Clear Terminal Screen",
+              contentDescription = "Clear terminal screen",
               tint = TerminalDimText,
               modifier = Modifier.size(16.dp)
             )
@@ -370,7 +382,7 @@ fun XtermTerminalView(
       }
     }
 
-    // Theme selector popup row
+    // Theme selector row.
     AnimatedVisibility(visible = showThemeSelector) {
       Row(
         modifier = Modifier
@@ -415,379 +427,183 @@ fun XtermTerminalView(
       }
     }
 
-    // Embed Xterm.js WebView container with full touch gesture support
+    // The terminal itself.
     Box(
       modifier = Modifier
         .weight(1f)
         .fillMaxWidth()
         .background(CyberBackground)
-        .padding(horizontal = 2.dp, vertical = 1.dp)
     ) {
       AndroidView(
         factory = { ctx ->
-          WebView(ctx).apply {
-            layoutParams = android.view.ViewGroup.LayoutParams(
-              android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-              android.view.ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            settings.apply {
-              javaScriptEnabled = true
-              domStorageEnabled = true
-              useWideViewPort = true
-              loadWithOverviewMode = true
-              cacheMode = WebSettings.LOAD_NO_CACHE
-              allowFileAccess = true
-              builtInZoomControls = false
-              displayZoomControls = false
-            }
-            addJavascriptInterface(bridge, "AndroidTerminal")
-            webViewClient = object : WebViewClient() {
-              override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                val safePrompt = JSONObject.quote(activePrompt)
-                view?.evaluateJavascript("window.xtermSetPrompt($safePrompt);", null)
-                val px = (fontSizeSp * 1.15).toInt().coerceIn(10, 24)
-                view?.evaluateJavascript("window.xtermSetFontSize($px);", null)
-                view?.evaluateJavascript("window.xtermSetTheme('${selectedTheme.id}');", null)
-
-                if (terminalLines.isNotEmpty()) {
-                  val sb = StringBuilder()
-                  for (line in terminalLines) {
-                    val ansiText = convertToAnsi(line)
-                    val safeJson = JSONObject.quote(ansiText)
-                    sb.append("window.xtermWriteln($safeJson);\n")
-                  }
-                  view?.evaluateJavascript(sb.toString(), null)
-                  lastRenderedLineCount = terminalLines.size
-                }
-              }
-            }
-            loadUrl("file:///android_asset/xterm/xterm_terminal.html")
-            webViewInstance = this
-          }
+          createTerminalWebView(ctx, bridge).also { webViewInstance = it }
         },
         modifier = Modifier.fillMaxSize().testTag("xterm_webview")
       )
     }
 
-    // Interactive Mobile & Touch Optimized Toolbar System
-    if (showMobileInputBar) {
-      Surface(
+    // Termux-style extra keys.
+    if (showExtraKeys) {
+      ExtraKeysRow(
+        ctrlActive = ctrlActive,
+        altActive = altActive,
+        onKey = { name -> sendKey(name) },
+        onLiteral = { text -> sendLiteral(text) },
+        onToggleCtrl = {
+          pushModifiers(!ctrlActive, altActive)
+        },
+        onToggleAlt = {
+          pushModifiers(ctrlActive, !altActive)
+        },
         modifier = Modifier
           .fillMaxWidth()
-          .imePadding(),
-        color = CyberSurface,
-        border = BorderStroke(1.dp, CyberBorder)
+          .imePadding()
+          .navigationBarsPadding()
+      )
+    }
+  }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+private fun createTerminalWebView(context: Context, bridge: TerminalJsBridge): WebView {
+  return WebView(context).apply {
+    layoutParams = android.view.ViewGroup.LayoutParams(
+      android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+      android.view.ViewGroup.LayoutParams.MATCH_PARENT
+    )
+    setBackgroundColor(android.graphics.Color.parseColor("#06090F"))
+    isFocusable = true
+    isFocusableInTouchMode = true
+    settings.apply {
+      javaScriptEnabled = true
+      domStorageEnabled = true
+      loadWithOverviewMode = true
+      cacheMode = WebSettings.LOAD_NO_CACHE
+      allowFileAccess = true
+      builtInZoomControls = false
+      displayZoomControls = false
+    }
+    addJavascriptInterface(bridge, "AndroidTerminal")
+    webViewClient = object : WebViewClient() {}
+    loadUrl("file:///android_asset/xterm/xterm_terminal.html")
+  }
+}
+
+/**
+ * Termux-style touch key rows: modifiers (sticky), navigation keys and the
+ * symbols terminal work needs most. Modifier keys arm the NEXT keypress from
+ * the soft keyboard (Ctrl+X, Alt+Tab style chords).
+ */
+@Composable
+fun ExtraKeysRow(
+  ctrlActive: Boolean,
+  altActive: Boolean,
+  onKey: (String) -> Unit,
+  onLiteral: (String) -> Unit,
+  onToggleCtrl: () -> Unit,
+  onToggleAlt: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  Surface(
+    modifier = modifier,
+    color = CyberSurface,
+    border = BorderStroke(1.dp, CyberBorder)
+  ) {
+    Column(modifier = Modifier.padding(vertical = 3.dp, horizontal = 4.dp)) {
+      // Row 1: modifiers + navigation
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
       ) {
-        Column(
-          modifier = Modifier.fillMaxWidth()
-        ) {
-          // Category selector tabs for touch key groupings
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .background(CyberSurfaceVariant)
-              .horizontalScroll(rememberScrollState())
-              .padding(horizontal = 6.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            MobileKeypadCategory.values().forEach { cat ->
-              val isSelected = selectedCategory == cat
-              Box(
-                modifier = Modifier
-                  .clip(RoundedCornerShape(4.dp))
-                  .background(if (isSelected) PrimaryCyan.copy(alpha = 0.2f) else Color.Transparent)
-                  .border(1.dp, if (isSelected) PrimaryCyan else Color.Transparent, RoundedCornerShape(4.dp))
-                  .clickable { selectedCategory = cat }
-                  .padding(horizontal = 7.dp, vertical = 3.dp)
-              ) {
-                Text(
-                  text = cat.title,
-                  color = if (isSelected) PrimaryCyan else TerminalDimText,
-                  fontSize = 10.sp,
-                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                  fontFamily = TerminalFontFamily
-                )
-              }
-            }
-          }
+        ExtraKey("ESC", onKey = { onKey("ESC") }, highlighted = false)
+        ExtraKey(
+          "CTRL",
+          onKey = onToggleCtrl,
+          highlighted = ctrlActive,
+          highlightedColor = TerminalRed
+        )
+        ExtraKey(
+          "ALT",
+          onKey = onToggleAlt,
+          highlighted = altActive,
+          highlightedColor = TerminalOrange
+        )
+        ExtraKey("TAB", onKey = { onKey("TAB") })
+        ExtraKey("↑", onKey = { onKey("UP") })
+        ExtraKey("↓", onKey = { onKey("DOWN") })
+        ExtraKey("←", onKey = { onKey("LEFT") })
+        ExtraKey("→", onKey = { onKey("RIGHT") })
+        ExtraKey("HOME", onKey = { onKey("HOME") })
+        ExtraKey("END", onKey = { onKey("END") })
+        ExtraKey("PGUP", onKey = { onKey("PGUP") })
+        ExtraKey("PGDN", onKey = { onKey("PGDN") })
+      }
 
-          // Category-Specific Touch Buttons Row
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .background(CyberSurfaceVariant.copy(alpha = 0.6f))
-              .horizontalScroll(rememberScrollState())
-              .padding(horizontal = 6.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            when (selectedCategory) {
-              MobileKeypadCategory.CORE -> {
-                TerminalKeyButton(
-                  label = "CTRL",
-                  isAccent = isCtrlLocked,
-                  onClick = { isCtrlLocked = !isCtrlLocked }
-                )
-                TerminalKeyButton(
-                  label = "ALT",
-                  isAccent = isAltLocked,
-                  onClick = { isAltLocked = !isAltLocked }
-                )
-                TerminalKeyButton(label = "ESC", onClick = {
-                  webViewInstance?.evaluateJavascript("window.xtermSendKey('ESC');", null)
-                })
-                TerminalKeyButton(label = "TAB", isAccent = true, onClick = {
-                  onKeyTab()
-                  webViewInstance?.evaluateJavascript("window.xtermSendKey('TAB');", null)
-                })
-                TerminalKeyButton(label = "^C", isDanger = true, onClick = {
-                  onKeyCtrlC()
-                  webViewInstance?.evaluateJavascript("window.xtermSendKey('CTRL_C');", null)
-                })
-                TerminalKeyButton(label = "^D", onClick = {
-                  onSendCommand("exit")
-                })
-                TerminalKeyButton(label = "^Z", onClick = {
-                  webViewInstance?.evaluateJavascript("window.xtermWriteln('^Z [Stopped]');", null)
-                })
-                TerminalKeyButton(label = "▲", onClick = {
-                  onKeyHistoryPrev()
-                  webViewInstance?.evaluateJavascript("window.xtermSendKey('ARROW_UP');", null)
-                })
-                TerminalKeyButton(label = "▼", onClick = {
-                  onKeyHistoryNext()
-                  webViewInstance?.evaluateJavascript("window.xtermSendKey('ARROW_DOWN');", null)
-                })
-                TerminalKeyButton(label = "⌫", onClick = {
-                  webViewInstance?.evaluateJavascript("window.xtermSendKey('BACKSPACE');", null)
-                })
-              }
-              MobileKeypadCategory.DEV -> {
-                XtermTouchChip(label = "python3") {
-                  onInsertText("python3 -c \"print('Hello World')\"")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('python3 ');", null)
-                }
-                XtermTouchChip(label = "go run") {
-                  onInsertText("go run main.go")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('go run ');", null)
-                }
-                XtermTouchChip(label = "rustc") {
-                  onInsertText("rustc --version")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('rustc ');", null)
-                }
-                XtermTouchChip(label = "node") {
-                  onInsertText("node -e \"console.log('Node ready')\"")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('node ');", null)
-                }
-                XtermTouchChip(label = "gcc") {
-                  onInsertText("gcc -Wall -O2 main.c -o app")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('gcc ');", null)
-                }
-                XtermTouchChip(label = "git status") { onSendCommand("git status") }
-                XtermTouchChip(label = "git log") { onSendCommand("git log --oneline -n 5") }
-                XtermTouchChip(label = "nano") {
-                  onInsertText("nano main.py")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('nano ');", null)
-                }
-              }
-              MobileKeypadCategory.UNIX -> {
-                TerminalKeyButton(label = "|", onClick = {
-                  onInsertText("| ")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('| ');", null)
-                })
-                TerminalKeyButton(label = "/", onClick = {
-                  onInsertText("/")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('/');", null)
-                })
-                TerminalKeyButton(label = "-", onClick = {
-                  onInsertText("-")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('-');", null)
-                })
-                TerminalKeyButton(label = "~", onClick = {
-                  onInsertText("~")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('~');", null)
-                })
-                TerminalKeyButton(label = ">", onClick = {
-                  onInsertText(" > ")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert(' > ');", null)
-                })
-                TerminalKeyButton(label = ">>", onClick = {
-                  onInsertText(" >> ")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert(' >> ');", null)
-                })
-                TerminalKeyButton(label = "&&", onClick = {
-                  onInsertText(" && ")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert(' && ');", null)
-                })
-                TerminalKeyButton(label = "$", onClick = {
-                  onInsertText("$")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('$');", null)
-                })
-                XtermTouchChip(label = "sudo") {
-                  onInsertText("sudo ")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('sudo ');", null)
-                }
-                XtermTouchChip(label = "grep") {
-                  onInsertText("grep -rn \"text\" .")
-                  webViewInstance?.evaluateJavascript("window.xtermInsert('grep ');", null)
-                }
-                XtermTouchChip(label = "ls -la") { onSendCommand("ls -la") }
-                XtermTouchChip(label = "df -h") { onSendCommand("df -h") }
-                XtermTouchChip(label = "free -m") { onSendCommand("free -m") }
-              }
+      Spacer(modifier = Modifier.height(3.dp))
 
-            }
-          }
-
-          // Touch-Optimized Command Input Field & Quick Action Buttons
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            OutlinedTextField(
-              value = terminalInput,
-              onValueChange = { newText ->
-                onInputChange(newText)
-                val safeText = JSONObject.quote(newText)
-                webViewInstance?.evaluateJavascript("window.xtermSetInput($safeText);", null)
-              },
-              modifier = Modifier
-                .weight(1f)
-                .testTag("terminal_mobile_input"),
-              placeholder = {
-                Text(
-                  "Type touch command...",
-                  color = TerminalDimText,
-                  fontFamily = TerminalFontFamily,
-                  fontSize = 12.sp
-                )
-              },
-              textStyle = TextStyle(
-                fontFamily = TerminalFontFamily,
-                fontSize = 13.sp,
-                color = TerminalWhite
-              ),
-              singleLine = true,
-              keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-              keyboardActions = KeyboardActions(
-                onSend = {
-                  onSendCommand(null)
-                  webViewInstance?.evaluateJavascript("window.xtermSetInput('');", null)
-                }
-              ),
-              colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = PrimaryCyan,
-                unfocusedBorderColor = CyberBorder,
-                focusedContainerColor = TerminalBlack,
-                unfocusedContainerColor = TerminalBlack
-              ),
-              shape = RoundedCornerShape(8.dp)
-            )
-
-            Spacer(modifier = Modifier.width(6.dp))
-
-            // Quick Send Button
-            Button(
-              onClick = {
-                onSendCommand(null)
-                webViewInstance?.evaluateJavascript("window.xtermSetInput('');", null)
-              },
-              colors = ButtonDefaults.buttonColors(
-                containerColor = SecondaryEmerald,
-                contentColor = TerminalBlack
-              ),
-              shape = RoundedCornerShape(8.dp),
-              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-              modifier = Modifier.testTag("terminal_send_button")
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.Send,
-                contentDescription = "Execute Command",
-                modifier = Modifier.size(18.dp)
-              )
-            }
-          }
-        }
+      // Row 2: symbols and shortcuts developers actually type
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+      ) {
+        ExtraKey("|", onKey = { onLiteral("|") })
+        ExtraKey("/", onKey = { onLiteral("/") })
+        ExtraKey("\\", onKey = { onLiteral("\\") })
+        ExtraKey("-", onKey = { onLiteral("-") })
+        ExtraKey("~", onKey = { onLiteral("~") })
+        ExtraKey("$", onKey = { onLiteral("$") })
+        ExtraKey("\"", onKey = { onLiteral("\"") })
+        ExtraKey("'", onKey = { onLiteral("'") })
+        ExtraKey("(", onKey = { onLiteral("(") })
+        ExtraKey(")", onKey = { onLiteral(")") })
+        ExtraKey(":", onKey = { onLiteral(":") })
+        ExtraKey(";", onKey = { onLiteral(";") })
+        ExtraKey("^C", onKey = { onKey("CTRL_C") }, highlightedColor = TerminalRed)
+        ExtraKey("^D", onKey = { onKey("CTRL_D") }, highlightedColor = TerminalRed)
+        ExtraKey("^L", onKey = { onKey("CTRL_L") })
+        ExtraKey("^Z", onKey = { onKey("CTRL_Z") })
+        ExtraKey("DEL", onKey = { onKey("DEL") })
+        ExtraKey("BKSP", onKey = { onKey("BKSP") })
       }
     }
   }
 }
 
 @Composable
-private fun TerminalKeyButton(
+private fun ExtraKey(
   label: String,
-  isAccent: Boolean = false,
-  isDanger: Boolean = false,
-  onClick: () -> Unit
-) {
-  val bgColor = when {
-    isDanger -> TerminalRed.copy(alpha = 0.2f)
-    isAccent -> PrimaryCyan.copy(alpha = 0.25f)
-    else -> CyberSurface
-  }
-  val textColor = when {
-    isDanger -> TerminalRed
-    isAccent -> PrimaryCyan
-    else -> TerminalWhite
-  }
-  val borderColor = when {
-    isDanger -> TerminalRed.copy(alpha = 0.5f)
-    isAccent -> PrimaryCyan.copy(alpha = 0.7f)
-    else -> CyberBorder
-  }
-
-  Box(
-    modifier = Modifier
-      .clip(RoundedCornerShape(6.dp))
-      .background(bgColor)
-      .border(1.dp, borderColor, RoundedCornerShape(6.dp))
-      .clickable(onClick = onClick)
-      .padding(horizontal = 10.dp, vertical = 7.dp)
-  ) {
-    Text(
-      text = label,
-      color = textColor,
-      fontFamily = TerminalFontFamily,
-      fontSize = 11.sp,
-      fontWeight = FontWeight.Bold
-    )
-  }
-}
-
-@Composable
-private fun XtermTouchChip(
-  label: String,
-  onClick: () -> Unit
+  onKey: () -> Unit,
+  highlighted: Boolean = false,
+  highlightedColor: Color = PrimaryCyan
 ) {
   Box(
     modifier = Modifier
+      .height(34.dp)
       .clip(RoundedCornerShape(6.dp))
-      .background(CyberSurface)
-      .border(1.dp, PrimaryCyan.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
-      .clickable(onClick = onClick)
-      .padding(horizontal = 9.dp, vertical = 6.dp)
+      .background(
+        when {
+          highlighted -> highlightedColor.copy(alpha = 0.25f)
+          else -> CyberSurfaceVariant
+        }
+      )
+      .border(
+        BorderStroke(1.dp, if (highlighted) highlightedColor else CyberBorder),
+        RoundedCornerShape(6.dp)
+      )
+      .clickable(onClick = onKey)
+      .padding(horizontal = 10.dp),
+    contentAlignment = Alignment.Center
   ) {
     Text(
       text = label,
-      color = PrimaryCyan,
-      fontFamily = TerminalFontFamily,
-      fontSize = 11.sp,
-      fontWeight = FontWeight.Medium
+      color = if (highlighted) highlightedColor else TerminalWhite,
+      fontSize = 12.sp,
+      fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
+      fontFamily = TerminalFontFamily
     )
-  }
-}
-
-private fun convertToAnsi(line: TerminalLine): String {
-  val text = line.text
-  return when (line) {
-    is TerminalLine.Command -> "\u001B[1;32m$text\u001B[0m"
-    is TerminalLine.Error -> "\u001B[1;31m$text\u001B[0m"
-    is TerminalLine.System -> "\u001B[1;36m$text\u001B[0m"
-    is TerminalLine.Output -> text
   }
 }

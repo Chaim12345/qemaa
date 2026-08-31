@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Linux VM</string>
+    <string name="vm_notification_channel">Linux VM engine</string>
+    <string name="vm_notification_channel_desc">Keeps the virtual machine running in the background</string>
+    <string name="vm_notification_title">Linux VM running</string>
+    <string name="vm_notification_text">The QEMU virtual machine is running. Tap to return to the terminal.</string>
 </resources>
