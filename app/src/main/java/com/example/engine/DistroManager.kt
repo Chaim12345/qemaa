@@ -194,7 +194,7 @@ class DistroManager(private val context: Context) {
     internal fun parseReleaseJson(json: String): DistroAssets {
         val release = JSONObject(json)
         val byName = HashMap<String, String>()
-        val assets = release.optJSONArray("assets") ?: emptyArray()
+        val assets = release.optJSONArray("assets") ?: JSONArray()
         for (i in 0 until assets.length()) {
             val asset = assets.optJSONObject(i) ?: continue
             val name = asset.optString("name")
