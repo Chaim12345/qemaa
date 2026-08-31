@@ -232,7 +232,7 @@ class DistroManager(private val context: Context) {
     private fun fetchText(url: String): String {
         val connection = openConnection(url)
         try {
-            connection.inputStream.bufferedReader().use { it.readText() }
+            return connection.inputStream.bufferedReader().use { it.readText() }
         } finally {
             connection.disconnect()
         }
