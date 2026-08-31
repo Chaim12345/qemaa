@@ -4,6 +4,23 @@ plugins {
   alias(libs.plugins.roborazzi)
 }
 
+// TEMP DIAGNOSTIC (remove once green): surface task failures as GitHub
+// annotations (::error::) so build problems are visible without raw logs.
+gradle.addListener(object : TaskExecutionListener {
+  override fun beforeExecute(task: org.gradle.api.Task) {}
+  override fun afterExecute(task: org.gradle.api.Task, state: org.gradle.api.tasks.TaskState) {
+    if (state.failure != null) {
+      val sw = java.io.StringWriter()
+      state.failure?.printStackTrace(java.io.PrintWriter(sw))
+      val detail = sw.toString().lineSequence()
+        .filter { it.contains("e: ") || it.contains("Caused by") || it.contains("at org.jetbrains.kotlin") || it.contains("error:") }
+        .take(24)
+        .joinToString(" | ")
+      println("::error ::TASK FAILED ${task.path} :: ${state.failure?.message?.take(300)} :: ${detail.take(1800)}")
+    }
+  }
+})
+
 android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
