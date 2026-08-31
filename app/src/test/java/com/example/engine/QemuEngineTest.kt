@@ -10,13 +10,14 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.RandomAccessFile
 import kotlin.io.path.createTempDirectory
 
 /**
  * Unit tests for the QEMU engine's binary resolution, asset validation and
- * guest command line.
+ * guest command line in BOTH boot modes (prebuilt distro disk + netboot).
  *
- * These encode the two production regressions this app has already hit:
+ * These encode the production regressions this app has already hit:
  *  1. an APK that only bundles one host ABI leaves arm64 phones without a
  *     QEMU binary (the error must name the device ABI), and
  *  2. root=/dev/ram0 in the guest cmdline makes the Alpine netboot initramfs
@@ -32,6 +33,35 @@ class QemuEngineTest {
     val context = ApplicationProvider.getApplicationContext<Context>()
     context.applicationInfo.nativeLibraryDir = nativeDir.absolutePath
     return context
+  }
+
+  private fun installFakeNativeBinary(context: Context): File {
+    val nativeDir = File(tempDir(), "lib/x86_64").apply { mkdirs() }
+    File(nativeDir, "libqemu-system-x86_64.so").writeText("ELF")
+    context.applicationInfo.nativeLibraryDir = nativeDir.absolutePath
+    return nativeDir
+  }
+
+  private fun installNetbootAssets(context: Context): File {
+    val qemuDir = File(context.filesDir, "qemu").apply { mkdirs() }
+    File(qemuDir, "vmlinuz-lts").writeText("kernel")
+    File(qemuDir, "initramfs-lts").writeText("initrd")
+    return qemuDir
+  }
+
+  /** Create a fake installed distro (image + kernel + initramfs). */
+  private fun installFakeDistro(context: Context): File {
+    val distroDir = File(context.filesDir, "qemu/distro").apply { mkdirs() }
+    File(distroDir, "rootfs.img").apply {
+      writeByteArray(ByteArray(1024) { 0 })
+      // Size above QemuEngine's plausibility threshold
+      val filler = RandomAccessFile(this, "rw")
+      filler.setLength(128L * 1024L * 1024L)
+      filler.close()
+    }
+    File(distroDir, "vmlinuz-lts").writeText("distro-kernel")
+    File(distroDir, "initramfs-lts").writeText("distro-initrd")
+    return distroDir
   }
 
   @Test
@@ -74,26 +104,18 @@ class QemuEngineTest {
 
   @Test
   fun `validateAssets passes when binary kernel and initrd exist`() {
-    val nativeDir = File(tempDir(), "lib/x86_64").apply { mkdirs() }
-    File(nativeDir, "libqemu-system-x86_64.so").writeText("ELF")
-    val context = contextWithNativeDir(nativeDir)
-
-    val qemuDir = File(context.filesDir, "qemu").apply { mkdirs() }
-    File(qemuDir, "vmlinuz-lts").writeText("kernel")
-    File(qemuDir, "initramfs-lts").writeText("initrd")
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    installFakeNativeBinary(context)
+    installNetbootAssets(context)
 
     QemuEngine(context).validateAssets() // must not throw
   }
 
   @Test
-  fun `guest command line boots Alpine from the network, not dev ram0`() {
-    val nativeDir = File(tempDir(), "lib/x86_64").apply { mkdirs() }
-    File(nativeDir, "libqemu-system-x86_64.so").writeText("ELF")
-    val context = contextWithNativeDir(nativeDir)
-
-    val qemuDir = File(context.filesDir, "qemu").apply { mkdirs() }
-    File(qemuDir, "vmlinuz-lts").writeText("kernel")
-    File(qemuDir, "initramfs-lts").writeText("initrd")
+  fun `netboot command line boots Alpine from the network, not dev ram0`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    installFakeNativeBinary(context)
+    installNetbootAssets(context)
 
     val command = QemuEngine(context).buildQemuCommand()
     val cmdline = command[command.indexOf("-append") + 1]
@@ -115,15 +137,74 @@ class QemuEngineTest {
     assertTrue(firmwareDir.endsWith("pc-bios"))
 
     // Kernel and initrd are the extracted assets.
+    val qemuDir = File(context.filesDir, "qemu")
     assertEquals(File(qemuDir, "vmlinuz-lts").absolutePath,
       command[command.indexOf("-kernel") + 1])
     assertEquals(File(qemuDir, "initramfs-lts").absolutePath,
       command[command.indexOf("-initrd") + 1])
 
     // The emulator itself comes from nativeLibraryDir.
+    val nativeDir = context.applicationInfo.nativeLibraryDir
     assertEquals(File(nativeDir, "libqemu-system-x86_64.so").absolutePath, command.first())
 
     // User-mode networking (slirp) must stay enabled.
-    assertTrue(command.contains("user,hostfwd=tcp::2222-:22"))
+    assertTrue(command.any { it.startsWith("user,hostfwd=tcp::2222-:22") })
+  }
+
+  @Test
+  fun `distro mode boots the persistent image with tuned performance flags`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    installFakeNativeBinary(context)
+    installNetbootAssets(context) // netboot assets may exist; distro takes priority
+    val distroDir = installFakeDistro(context)
+
+    val engine = QemuEngine(context)
+    assertEquals(BootMode.DISTRO, engine.bootMode())
+
+    val command = engine.buildQemuCommand()
+    val cmdline = command[command.indexOf("-append") + 1]
+
+    // Boots from the persistent virtio disk, not the network.
+    assertTrue("must set root=/dev/vda: $cmdline", cmdline.contains("root=/dev/vda"))
+    assertTrue("must mount rw: $cmdline", cmdline.contains("rw"))
+    assertFalse("must not netboot in distro mode: $cmdline", cmdline.contains("alpine_repo"))
+    assertTrue(cmdline.contains("console=ttyS0"))
+
+    // The distro's own kernel/initramfs (version-matched to the image).
+    assertEquals(File(distroDir, "vmlinuz-lts").absolutePath,
+      command[command.indexOf("-kernel") + 1])
+    assertEquals(File(distroDir, "initramfs-lts").absolutePath,
+      command[command.indexOf("-initrd") + 1])
+
+    // The persistent disk is attached as a virtio drive.
+    val driveIndex = command.indexOf("-drive")
+    assertTrue("must attach the rootfs via -drive", driveIndex >= 0)
+    val driveArg = command.getOrNull(driveIndex + 1).orEmpty()
+    assertTrue("drive must point at the rootfs image: $driveArg",
+      driveArg.contains("rootfs.img") && driveArg.contains("if=virtio"))
+
+    // Performance tuning: MTTCG + widest TCG CPU model.
+    assertEquals("tcg,thread=multi", command.getOrNull(command.indexOf("-accel") + 1))
+    assertEquals("max", command.getOrNull(command.indexOf("-cpu") + 1))
+
+    // Host-adaptive sizing.
+    val smp = command.getOrNull(command.indexOf("-smp") + 1)?.toIntOrNull() ?: 0
+    assertTrue("smp must be 2..6: $smp", smp in 2..6)
+    val mem = command.getOrNull(command.indexOf("-m") + 1)?.toIntOrNull() ?: 0
+    assertTrue("memory must be >= 768MB: $mem", mem >= 768)
+
+    // Network stays available (agents need API access).
+    assertTrue(command.any { it.startsWith("user,hostfwd=tcp::2222-:22") })
+  }
+
+  @Test
+  fun `netboot mode is used when no distro is installed`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    installFakeNativeBinary(context)
+    installNetbootAssets(context)
+
+    val engine = QemuEngine(context)
+    assertEquals(BootMode.NETBOOT, engine.bootMode())
+    assertFalse(engine.buildQemuCommand().any { it.contains("rootfs.img") })
   }
 }

@@ -1,12 +1,19 @@
 package com.example.engine
 
+import android.app.ActivityManager
 import android.content.Context
 import kotlinx.coroutines.*
 import java.io.*
+import java.util.concurrent.TimeUnit
 
 /**
  * Pure QEMU VM engine.
- * Manages QEMU process lifecycle with full system emulation.
+ * Manages the QEMU process lifecycle with full system emulation.
+ *
+ * Two boot modes:
+ *  - DISK: a prebuilt distro image (Alpine + Node + Go + coding agents) is
+ *    installed under filesDir/qemu/distro. Boots from a persistent virtio disk.
+ *  - NETBOOT (fallback): Alpine netboot kernel/initramfs from APK assets.
  */
 class QemuEngine(
     private val context: Context
@@ -15,10 +22,20 @@ class QemuEngine(
     private var outputThread: Thread? = null
     private var errorThread: Thread? = null
     private var scope: CoroutineScope? = null
+    private val writeLock = Any()
 
     private val workDir: File by lazy {
         File(context.filesDir, "qemu").apply { mkdirs() }
     }
+
+    /** Directory holding the downloaded prebuilt distro (image + matching kernel). */
+    private val distroDir: File by lazy {
+        File(workDir, "distro").apply { mkdirs() }
+    }
+
+    private val distroRootfs: File get() = File(distroDir, "rootfs.img")
+    private val distroKernel: File get() = File(distroDir, "vmlinuz-lts")
+    private val distroInitrd: File get() = File(distroDir, "initramfs-lts")
 
     private val qemuBinary: File by lazy {
         resolveQemuBinary()
@@ -43,11 +60,6 @@ class QemuEngine(
      * package installer extracts it into nativeLibraryDir. This is the only location
      * from which an app targeting API 29+ may exec() a file, because SELinux (W^X)
      * denies executing anything inside the app's writable data directory.
-     *
-     * The APK bundles the emulator for every supported host ABI (x86_64 and
-     * arm64-v8a): Android extracts only the matching ABI's libraries at install
-     * time, so on any 64-bit device nativeLibraryDir contains an executable
-     * qemu-system-x86_64 that emulates an x86_64 PC via TCG.
      *
      * Legacy fallback: builds that bundle the binary as an APK asset instead extract
      * it to filesDir. That only works when exec from app data is permitted (old
@@ -74,11 +86,26 @@ class QemuEngine(
         return assetBinary
     }
 
+    /** Which boot mode the next [start] will use. */
+    fun bootMode(): BootMode =
+        if (isDistroInstalled()) BootMode.DISTRO else BootMode.NETBOOT
+
+    fun isDistroInstalled(): Boolean =
+        distroRootfs.exists() && distroRootfs.length() > MIN_ROOTFS_BYTES &&
+            distroKernel.exists() && distroKernel.length() > 0L &&
+            distroInitrd.exists() && distroInitrd.length() > 0L
+
     /**
      * Start QEMU with full system emulation.
+     *
+     * @param onChunk raw bytes written by the guest to the serial console. The
+     *        stream is NOT line-based: ANSI escapes and partial UTF-8 sequences
+     *        must survive, exactly like a real terminal.
+     * @param onError diagnostics from QEMU's stderr (does not imply a dead VM).
+     * @param onComplete invoked once the QEMU process has exited.
      */
     fun start(
-        onOutput: (String) -> Unit,
+        onChunk: (ByteArray) -> Unit,
         onError: (String) -> Unit,
         onComplete: () -> Unit
     ) {
@@ -100,42 +127,43 @@ class QemuEngine(
                 processBuilder.directory(workDir)
                 processBuilder.redirectErrorStream(false)
 
-                process = processBuilder.start()
+                val startedProcess = processBuilder.start()
+                process = startedProcess
 
-                // Start output reader
+                // Raw byte pump: guest output -> terminal. Buffered per read,
+                // never split by lines (escape sequences must stay intact).
                 outputThread = Thread {
                     try {
-                        BufferedReader(InputStreamReader(process!!.inputStream)).use { reader ->
-                            var line: String?
-                            while (reader.readLine().also { line = it } != null) {
-                                line?.let { onOutput(it) }
-                            }
+                        val input = startedProcess.inputStream
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            if (read > 0) onChunk(buffer.copyOf(read))
                         }
-                    } catch (e: Exception) {
-                        if (process?.isAlive == true) {
-                            onError("Output stream error: ${e.message}")
-                        }
+                    } catch (_: IOException) {
+                        // Stream closed when the process dies - expected.
                     }
                 }.apply { start() }
 
-                // Start error reader
+                // Stderr is diagnostics only (QEMU prints benign warnings there
+                // while the VM runs perfectly fine).
                 errorThread = Thread {
                     try {
-                        BufferedReader(InputStreamReader(process!!.errorStream)).use { reader ->
+                        BufferedReader(InputStreamReader(startedProcess.errorStream)).use { reader ->
                             var line: String?
                             while (reader.readLine().also { line = it } != null) {
-                                line?.let { onError("QEMU: $it") }
+                                line?.let { onError(it) }
                             }
                         }
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         // Ignore
                     }
                 }.apply { start() }
 
                 // Wait for process completion
-                val exitCode = process?.waitFor() ?: -1
+                startedProcess.waitFor()
                 onComplete()
-
             } catch (e: Exception) {
                 onError("Failed to start QEMU: ${e.message}")
                 onComplete()
@@ -144,42 +172,50 @@ class QemuEngine(
     }
 
     /**
-     * Send input to QEMU's stdin.
+     * Send raw bytes to QEMU's stdin EXACTLY as given (no newline appended).
+     * This is what makes Ctrl+C (0x03), Tab (0x09), escape sequences and
+     * interactive TUI input work like a real terminal.
      */
-    fun sendInput(input: String) {
+    fun sendRaw(bytes: ByteArray) {
+        val currentProcess = process ?: return
         try {
-            process?.outputStream?.let { stream ->
-                stream.write("$input\n".toByteArray())
-                stream.flush()
+            synchronized(writeLock) {
+                currentProcess.outputStream.let { stream ->
+                    stream.write(bytes)
+                    stream.flush()
+                }
             }
-        } catch (e: Exception) {
-            // Ignore write errors
+        } catch (_: Exception) {
+            // Ignore write errors (process exiting)
         }
     }
 
     /**
-     * Stop QEMU process.
+     * Send one line of input followed by a newline.
+     */
+    fun sendInput(input: String) {
+        sendRaw((input + "\n").toByteArray(Charsets.UTF_8))
+    }
+
+    /**
+     * Stop QEMU. SIGTERM is QEMU's graceful shutdown: it flushes the block
+     * layer, so a distro disk stays consistent. Falls back to SIGKILL.
      */
     fun stop() {
         try {
-            // Send quit command to QEMU monitor
-            sendInput("quit")
+            process?.let { p ->
+                p.destroy() // SIGTERM -> QEMU flushes and exits
+                if (!p.waitFor(3, TimeUnit.SECONDS)) {
+                    p.destroyForcibly()
+                    p.waitFor(2, TimeUnit.SECONDS)
+                }
+            }
 
-            // Wait a bit for graceful shutdown
-            Thread.sleep(500)
-
-            // Force kill if still running
-            process?.destroy()
-            process?.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
-
-            // Cleanup threads
             outputThread?.interrupt()
             errorThread?.interrupt()
 
-            // Cancel coroutine scope
             scope?.cancel()
-
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // Ignore cleanup errors
         } finally {
             process = null
@@ -203,14 +239,12 @@ class QemuEngine(
         val assets = context.assets
 
         // The QEMU binary itself is resolved from nativeLibraryDir (see
-        // resolveQemuBinary); only the kernel and initramfs are extracted here.
+        // resolveQemuBinary); the kernel and initramfs are extracted here.
+        // In DISK mode the distro's own kernel/initramfs are used instead.
 
-        // Extract kernel
         if (!kernel.exists() || kernel.length() == 0L) {
             extractAsset(assets, "alpine/vmlinuz-lts", kernel)
         }
-
-        // Extract initrd
         if (!initrd.exists() || initrd.length() == 0L) {
             extractAsset(assets, "alpine/initramfs-lts", initrd)
         }
@@ -228,11 +262,10 @@ class QemuEngine(
                 extractAsset(assets, "qemu/pc-bios/$name", dest)
             }
         }
-
     }
 
     /**
-     * Validate that all required assets are present.
+     * Validate that all assets required for the active boot mode are present.
      */
     internal fun validateAssets() {
         val missing = mutableListOf<String>()
@@ -243,55 +276,103 @@ class QemuEngine(
             val deviceAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
             missing.add("QEMU binary (no build bundled for this device's ABI: $deviceAbi)")
         }
-        if (!kernel.exists()) missing.add("Linux kernel")
-        if (!initrd.exists()) missing.add("initramfs")
+
+        when (bootMode()) {
+            BootMode.DISTRO -> {
+                if (distroRootfs.length() <= MIN_ROOTFS_BYTES) missing.add("distro rootfs image")
+                if (!distroKernel.exists()) missing.add("distro kernel")
+                if (!distroInitrd.exists()) missing.add("distro initramfs")
+            }
+            BootMode.NETBOOT -> {
+                if (!kernel.exists()) missing.add("Linux kernel")
+                if (!initrd.exists()) missing.add("initramfs")
+            }
+        }
 
         if (missing.isNotEmpty()) {
             throw IllegalStateException("Missing required assets: ${missing.joinToString(", ")}")
         }
     }
 
+    // ── Host-adaptive performance tuning ────────────────────────────────────
+
+    /** vCPUs: the guest is CPU-heavy under TCG, but past ~6 there is no gain. */
+    internal fun guestSmp(): Int =
+        Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+
+    /** Guest RAM scaled to the device (TCG allocates lazily, so being generous is safe). */
+    internal fun guestMemoryMb(): Int {
+        val actMgr = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        actMgr?.getMemoryInfo(memInfo)
+        val totalMb = (memInfo?.totalMem ?: 0L) / (1024L * 1024L)
+        return when {
+            totalMb >= 6 * 1024 -> 1536
+            totalMb >= 4 * 1024 -> 1024
+            else -> 768
+        }
+    }
+
     /**
-     * Build QEMU command line with full system emulation.
+     * Build the QEMU command line.
      *
      * Guest cmdline notes (validated against the Alpine netboot initramfs):
-     * - NO root= parameter. With root=/dev/ram0 the initramfs tries to mount
-     *   /dev/ram0 as /sysroot, fails ("Invalid argument") and drops into an
-     *   emergency recovery shell instead of booting.
-     * - ip=dhcp + alpine_repo= activate the netboot path: the initramfs gets an
-     *   address via QEMU's user-mode NAT (slirp), installs alpine-base from the
-     *   repository into a RAM filesystem and boots it to the login prompt.
+     * - NETBOOT mode has NO root= parameter. ip=dhcp + alpine_repo= activate the
+     *   netboot path: the initramfs installs alpine-base into a RAM filesystem
+     *   and boots it to the login prompt.
      * - dns0/dns1 pin EXTERNAL resolvers (fields 8 and 9 of ip=). The DNS
      *   server that slirp's DHCP hands out (10.0.2.3) is a virtual forwarder
      *   that reads /etc/resolv.conf on the HOST — which does not exist on
-     *   Android, so name resolution silently fails there (apk then aborts with
-     *   "updating and opening <repo>"). Explicit 8.8.8.8/1.1.1.1 entries make
-     *   the guest query real servers through slirp's UDP NAT instead. musl
-     *   falls back past the dead first entry (validated: Alpine boots with two
-     *   unreachable nameservers ahead of a working one).
-     * - modloop is intentionally not fetched: the virtio drivers this VM needs
-     *   are built into the lts kernel, and remote modloop verification fails
-     *   noisily inside the initramfs.
+     *   Android, so name resolution silently fails there. Explicit
+     *   8.8.8.8/1.1.1.1 entries make the guest query real servers through
+     *   slirp's UDP NAT instead.
+     * - DISK mode boots the prebuilt distro from a persistent virtio disk
+     *   (root=/dev/vda, rw) — packages, files and agent installs survive reboot.
      */
     internal fun buildQemuCommand(): List<String> {
-        return listOf(
-            qemuBinary.absolutePath,
+        val diskBoot = isDistroInstalled()
+        val bootKernel = if (diskBoot) distroKernel else kernel
+        val bootInitrd = if (diskBoot) distroInitrd else initrd
+
+        val append = if (diskBoot) {
+            // Keep boot visible: agetty's login prompt is also the readiness signal.
+            "console=ttyS0 root=/dev/vda rw"
+        } else {
+            "console=ttyS0 quiet ip=dhcp:::::::8.8.8.8:1.1.1.1 " +
+                "alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/"
+        }
+
+        return buildList {
+            add(qemuBinary.absolutePath)
             // Point QEMU at the extracted firmware (SeaBIOS, linuxboot ROMs,
             // virtio option ROM) — without -L it cannot find bios-256k.bin.
-            "-L", pcbiosDir.absolutePath,
-            "-kernel", kernel.absolutePath,
-            "-initrd", initrd.absolutePath,
-            "-append", "console=ttyS0 quiet ip=dhcp:::::::8.8.8.8:1.1.1.1 alpine_repo=http://dl-cdn.alpinelinux.org/alpine/latest-stable/main/",
-            "-m", "512",
-            "-smp", "2",
-            "-nographic",
-            "-serial", "stdio",
-            "-monitor", "none",
-            "-net", "nic,model=virtio",
-            "-net", "user,hostfwd=tcp::2222-:22",
-            "-no-reboot",
-            "-nodefaults"
-        )
+            add("-L"); add(pcbiosDir.absolutePath)
+            add("-kernel"); add(bootKernel.absolutePath)
+            add("-initrd"); add(bootInitrd.absolutePath)
+            add("-append"); add(append)
+            // Performance: MTTCG (multi-threaded TCG) + the widest CPU model
+            // TCG supports is significantly faster than the qemu64 default.
+            add("-accel"); add("tcg,thread=multi")
+            add("-cpu"); add("max")
+            add("-smp"); add(guestSmp().toString())
+            add("-m"); add(guestMemoryMb().toString())
+            add("-rtc"); add("base=utc")
+            add("-nographic")
+            add("-serial"); add("stdio")
+            add("-monitor"); add("none")
+            add("-net"); add("nic,model=virtio")
+            add("-net"); add("user,hostfwd=tcp::2222-:22")
+            if (diskBoot) {
+                // Persistent distro disk. cache=writeback keeps TCG I/O usable;
+                // SIGTERM shutdown (see stop()) still flushes consistently.
+                add("-drive")
+                add("file=${distroRootfs.absolutePath},format=raw,if=virtio,cache=writeback")
+                // Entropy for TLS handshakes (npm, apk, agent API calls).
+                add("-device"); add("virtio-rng-pci")
+            }
+            add("-no-reboot")
+            add("-nodefaults")
+        }
     }
 
     /**
@@ -307,5 +388,10 @@ class QemuEngine(
         } catch (e: Exception) {
             throw IllegalStateException("Failed to extract $assetPath: ${e.message}", e)
         }
+    }
+
+    private companion object {
+        /** A rootfs smaller than this is a truncated download, not a distro. */
+        const val MIN_ROOTFS_BYTES = 64L * 1024L * 1024L
     }
 }

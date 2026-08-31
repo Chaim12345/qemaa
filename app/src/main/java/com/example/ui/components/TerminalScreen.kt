@@ -2,8 +2,6 @@ package com.example.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,49 +11,34 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Surface
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.engine.TerminalLine
+import com.example.engine.BootMode
+import com.example.engine.DistroManager
 import com.example.engine.VmState
 import com.example.ui.theme.CyberBackground
 import com.example.ui.theme.CyberBorder
@@ -64,38 +47,35 @@ import com.example.ui.theme.CyberSurfaceVariant
 import com.example.ui.theme.PrimaryCyan
 import com.example.ui.theme.SecondaryEmerald
 import com.example.ui.theme.TerminalBlack
-import com.example.ui.theme.TerminalCyan
 import com.example.ui.theme.TerminalDimText
 import com.example.ui.theme.TerminalFontFamily
 import com.example.ui.theme.TerminalGreen
 import com.example.ui.theme.TerminalRed
 import com.example.ui.theme.TerminalWhite
 import com.example.ui.theme.TerminalYellow
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharedFlow
 
+/**
+ * The main screen: VM header + distro banner + the real xterm.js terminal.
+ */
 @Composable
 fun TerminalScreen(
-  terminalLines: List<TerminalLine>,
   vmStatus: VmState,
-  activePrompt: String,
-  terminalInput: String,
+  bootMode: BootMode,
+  distroState: DistroManager.DistroState,
+  terminalChunks: SharedFlow<String>,
   fontSizeSp: Int,
-  onInputChange: (String) -> Unit,
-  onSendCommand: (String?) -> Unit,
+  immersiveMode: Boolean,
   onStartVm: () -> Unit,
   onStopVm: () -> Unit,
-  onClearTerminal: () -> Unit,
-  onIncreaseFontSize: () -> Unit,
-  onDecreaseFontSize: () -> Unit,
-  onKeyTab: () -> Unit,
-  onKeyCtrlC: () -> Unit,
-  onKeyHistoryPrev: () -> Unit,
-  onKeyHistoryNext: () -> Unit,
-  onKeyInsert: (String) -> Unit,
+  onInstallDistro: () -> Unit,
+  onUninstallDistro: () -> Unit,
+  onTerminalData: (String) -> Unit,
+  onTerminalResized: (cols: Int, rows: Int) -> Unit,
+  onFontSizeChanged: (sp: Int) -> Unit,
+  onToggleImmersive: () -> Unit,
   onOpenVirtualizationReport: () -> Unit
 ) {
-  var useXtermEmulator by remember { mutableStateOf(true) }
-
   Column(
     modifier = Modifier
       .fillMaxSize()
@@ -104,60 +84,30 @@ fun TerminalScreen(
     // Top Header Bar
     TerminalHeader(
       vmStatus = vmStatus,
-      useXtermEmulator = useXtermEmulator,
-      onToggleXtermEmulator = { useXtermEmulator = !useXtermEmulator },
+      bootMode = bootMode,
+      immersiveMode = immersiveMode,
       onStartVm = onStartVm,
       onStopVm = onStopVm,
-      onClearTerminal = onClearTerminal,
-      onIncreaseFontSize = onIncreaseFontSize,
-      onDecreaseFontSize = onDecreaseFontSize,
+      onToggleImmersive = onToggleImmersive,
       onOpenVirtualizationReport = onOpenVirtualizationReport
     )
 
-    if (useXtermEmulator) {
-      XtermTerminalView(
-        terminalLines = terminalLines,
-        activePrompt = activePrompt,
-        terminalInput = terminalInput,
-        fontSizeSp = fontSizeSp,
-        onInputChange = onInputChange,
-        onSendCommand = onSendCommand,
-        onClearTerminal = onClearTerminal,
-        onIncreaseFontSize = onIncreaseFontSize,
-        onDecreaseFontSize = onDecreaseFontSize,
-        onKeyTab = onKeyTab,
-        onKeyCtrlC = onKeyCtrlC,
-        onKeyHistoryPrev = onKeyHistoryPrev,
-        onKeyHistoryNext = onKeyHistoryNext,
-        onInsertText = onKeyInsert,
-        modifier = Modifier.weight(1f)
-      )
-    } else {
-      ClassicTerminalView(
-        terminalLines = terminalLines,
-        activePrompt = activePrompt,
-        terminalInput = terminalInput,
-        fontSizeSp = fontSizeSp,
-        onInputChange = onInputChange,
-        onSendCommand = onSendCommand,
-        onKeyTab = onKeyTab,
-        onKeyCtrlC = onKeyCtrlC,
-        onKeyHistoryPrev = onKeyHistoryPrev,
-        onKeyHistoryNext = onKeyHistoryNext,
-        modifier = Modifier.weight(1f)
-      )
-    }
+    // Distro install / status banner
+    DistroBanner(
+      distroState = distroState,
+      vmStatus = vmStatus,
+      onInstallDistro = onInstallDistro,
+      onUninstallDistro = onUninstallDistro
+    )
 
-    // Touch Accessory Bar
-    TouchAccessoryBar(
-      terminalInput = terminalInput,
-      onInputChange = onInputChange,
-      onKeyTab = onKeyTab,
-      onKeyCtrlC = onKeyCtrlC,
-      onKeyHistoryPrev = onKeyHistoryPrev,
-      onKeyHistoryNext = onKeyHistoryNext,
-      onInsertText = onKeyInsert,
-      onSendCommand = onSendCommand
+    // The terminal
+    XtermTerminalView(
+      terminalChunks = terminalChunks,
+      fontSizeSp = fontSizeSp,
+      onTerminalData = onTerminalData,
+      onTerminalResized = onTerminalResized,
+      onFontSizeChanged = onFontSizeChanged,
+      modifier = Modifier.weight(1f)
     )
   }
 }
@@ -165,13 +115,11 @@ fun TerminalScreen(
 @Composable
 private fun TerminalHeader(
   vmStatus: VmState,
-  useXtermEmulator: Boolean,
-  onToggleXtermEmulator: () -> Unit,
+  bootMode: BootMode,
+  immersiveMode: Boolean,
   onStartVm: () -> Unit,
   onStopVm: () -> Unit,
-  onClearTerminal: () -> Unit,
-  onIncreaseFontSize: () -> Unit,
-  onDecreaseFontSize: () -> Unit,
+  onToggleImmersive: () -> Unit,
   onOpenVirtualizationReport: () -> Unit
 ) {
   val statusColor = when (vmStatus) {
@@ -186,361 +134,331 @@ private fun TerminalHeader(
     VmState.ERROR -> "Error"
     VmState.STOPPED -> "VM Stopped"
   }
+  val modeLabel = when (bootMode) {
+    BootMode.DISTRO -> "DISTRO"
+    BootMode.NETBOOT -> "NETBOOT"
+  }
+  val modeColor = when (bootMode) {
+    BootMode.DISTRO -> TerminalGreen
+    BootMode.NETBOOT -> TerminalYellow
+  }
 
-  Surface(
+  androidx.compose.material3.Surface(
     modifier = Modifier
       .fillMaxWidth()
       .background(CyberSurface),
     color = CyberSurface,
     border = androidx.compose.foundation.BorderStroke(1.dp, CyberBorder)
   ) {
-    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        // Status indicator
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Box(
-            modifier = Modifier
-              .size(10.dp)
-              .clip(CircleShape)
-              .background(statusColor)
-          )
-          Spacer(modifier = Modifier.width(6.dp))
-          Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Text(
-                text = "Linux VM",
-                color = TerminalWhite,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp
-              )
-              Spacer(modifier = Modifier.width(6.dp))
-              // Status Badge
-              Box(
-                modifier = Modifier
-                  .clip(RoundedCornerShape(4.dp))
-                  .background(statusColor.copy(alpha = 0.2f))
-                  .border(1.dp, statusColor, RoundedCornerShape(4.dp))
-                  .padding(horizontal = 4.dp, vertical = 2.dp)
-              ) {
-                Text(
-                  text = statusText,
-                  color = statusColor,
-                  fontSize = 9.sp,
-                  fontWeight = FontWeight.Bold,
-                  fontFamily = TerminalFontFamily
-                )
-              }
-              Spacer(modifier = Modifier.width(4.dp))
-              // Xterm.js / Classic Toggle Badge
-              Box(
-                modifier = Modifier
-                  .clip(RoundedCornerShape(4.dp))
-                  .background(if (useXtermEmulator) PrimaryCyan.copy(alpha = 0.18f) else CyberBorder)
-                  .border(1.dp, if (useXtermEmulator) PrimaryCyan else CyberBorder, RoundedCornerShape(4.dp))
-                  .clickable(onClick = onToggleXtermEmulator)
-                  .padding(horizontal = 4.dp, vertical = 2.dp)
-              ) {
-                Text(
-                  text = if (useXtermEmulator) "xterm.js" else "Classic",
-                  color = if (useXtermEmulator) PrimaryCyan else TerminalDimText,
-                  fontSize = 9.sp,
-                  fontWeight = FontWeight.Bold,
-                  fontFamily = TerminalFontFamily
-                )
-              }
-            }
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 10.dp, vertical = 6.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      // Status indicator
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+          modifier = Modifier
+            .size(10.dp)
+            .clip(CircleShape)
+            .background(statusColor)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Column {
+          Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-              text = "QEMU x86_64 TCG Emulation",
-              color = statusColor,
+              text = "Linux VM",
+              color = TerminalWhite,
+              fontWeight = FontWeight.Bold,
+              fontSize = 13.sp
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Box(
+              modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(statusColor.copy(alpha = 0.2f))
+                .border(1.dp, statusColor, RoundedCornerShape(4.dp))
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+              Text(
+                text = statusText,
+                color = statusColor,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = TerminalFontFamily
+              )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Box(
+              modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(modeColor.copy(alpha = 0.15f))
+                .border(1.dp, modeColor, RoundedCornerShape(4.dp))
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+              Text(
+                text = modeLabel,
+                color = modeColor,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = TerminalFontFamily
+              )
+            }
+          }
+          Text(
+            text = "QEMU x86_64 TCG • Alpine • Node • Go",
+            color = statusColor,
+            fontSize = 10.sp,
+            fontFamily = TerminalFontFamily
+          )
+        }
+      }
+
+      // VM Control & action buttons
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        if (vmStatus == VmState.RUNNING || vmStatus == VmState.BOOTING) {
+          Button(
+            onClick = onStopVm,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = TerminalRed,
+              contentColor = TerminalWhite
+            ),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.height(28.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.Stop,
+              contentDescription = null,
+              modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(2.dp))
+            Text("Stop", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+          }
+        } else {
+          Button(
+            onClick = onStartVm,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = SecondaryEmerald,
+              contentColor = TerminalBlack
+            ),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.height(28.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.PlayArrow,
+              contentDescription = null,
+              modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(2.dp))
+            Text("Start", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+          }
+        }
+
+        Spacer(modifier = Modifier.width(4.dp))
+
+        IconButton(
+          onClick = onToggleImmersive,
+          modifier = Modifier.size(32.dp)
+        ) {
+          Icon(
+            imageVector = if (immersiveMode) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+            contentDescription = "Toggle fullscreen",
+            tint = PrimaryCyan,
+            modifier = Modifier.size(20.dp)
+          )
+        }
+        IconButton(onClick = onOpenVirtualizationReport, modifier = Modifier.size(32.dp)) {
+          Icon(
+            imageVector = Icons.Default.Memory,
+            contentDescription = "Hardware Info",
+            tint = PrimaryCyan,
+            modifier = Modifier.size(20.dp)
+          )
+        }
+      }
+    }
+  }
+}
+
+/**
+ * One-tap install of the prebuilt distro (Alpine + Node + Go + pi + opencode),
+ * with live download progress.
+ */
+@Composable
+private fun DistroBanner(
+  distroState: DistroManager.DistroState,
+  vmStatus: VmState,
+  onInstallDistro: () -> Unit,
+  onUninstallDistro: () -> Unit
+) {
+  androidx.compose.material3.Surface(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(CyberSurfaceVariant),
+    color = CyberSurfaceVariant,
+    border = androidx.compose.foundation.BorderStroke(1.dp, CyberBorder)
+  ) {
+    when (distroState) {
+      is DistroManager.DistroState.NotInstalled -> {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "No distro installed — currently boots Alpine via network into RAM.",
+              color = TerminalDimText,
+              fontSize = 10.sp,
+              fontFamily = TerminalFontFamily
+            )
+            Text(
+              text = "Install the prebuilt distro with Node.js, Go, π agent & opencode (persistent disk).",
+              color = TerminalWhite,
               fontSize = 10.sp,
               fontFamily = TerminalFontFamily
             )
           }
-        }
-
-        // VM Control & Action Buttons
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          // Start/Stop VM Button
-          if (vmStatus == VmState.RUNNING || vmStatus == VmState.BOOTING) {
-            Button(
-              onClick = onStopVm,
-              colors = ButtonDefaults.buttonColors(
-                containerColor = TerminalRed,
-                contentColor = TerminalWhite
-              ),
-              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-              shape = RoundedCornerShape(6.dp),
-              modifier = Modifier.height(28.dp)
-            ) {
-              Icon(
-                imageVector = Icons.Default.Stop,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp)
-              )
-              Spacer(modifier = Modifier.width(2.dp))
-              Text("Stop", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-            }
-          } else {
-            Button(
-              onClick = onStartVm,
-              colors = ButtonDefaults.buttonColors(
-                containerColor = SecondaryEmerald,
-                contentColor = TerminalBlack
-              ),
-              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-              shape = RoundedCornerShape(6.dp),
-              modifier = Modifier.height(28.dp)
-            ) {
-              Icon(
-                imageVector = Icons.Default.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp)
-              )
-              Spacer(modifier = Modifier.width(2.dp))
-              Text("Start", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-            }
-          }
-
-          Spacer(modifier = Modifier.width(4.dp))
-
-          IconButton(onClick = onOpenVirtualizationReport, modifier = Modifier.size(32.dp)) {
+          Spacer(modifier = Modifier.width(8.dp))
+          Button(
+            onClick = onInstallDistro,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = PrimaryCyan,
+              contentColor = TerminalBlack
+            ),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.height(30.dp)
+          ) {
             Icon(
-              imageVector = Icons.Default.Memory,
-              contentDescription = "Hardware Info",
-              tint = PrimaryCyan,
-              modifier = Modifier.size(20.dp)
+              imageVector = Icons.Default.CloudDownload,
+              contentDescription = null,
+              modifier = Modifier.size(14.dp)
             )
-          }
-          IconButton(onClick = onClearTerminal, modifier = Modifier.size(32.dp)) {
-            Icon(
-              imageVector = Icons.Default.Clear,
-              contentDescription = "Clear Terminal",
-              tint = TerminalRed,
-              modifier = Modifier.size(18.dp)
-            )
-          }
-          IconButton(onClick = onDecreaseFontSize, modifier = Modifier.size(28.dp)) {
-            Icon(
-              imageVector = Icons.Default.FormatSize,
-              contentDescription = "Decrease Font",
-              tint = TerminalDimText,
-              modifier = Modifier.size(16.dp)
-            )
-          }
-          IconButton(onClick = onIncreaseFontSize, modifier = Modifier.size(28.dp)) {
-            Icon(
-              imageVector = Icons.Default.FormatSize,
-              contentDescription = "Increase Font",
-              tint = TerminalWhite,
-              modifier = Modifier.size(20.dp)
-            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Install Distro", fontWeight = FontWeight.Bold, fontSize = 10.sp)
           }
         }
       }
-    }
-  }
-}
 
-@Composable
-private fun ClassicTerminalView(
-  terminalLines: List<TerminalLine>,
-  activePrompt: String,
-  terminalInput: String,
-  fontSizeSp: Int,
-  onInputChange: (String) -> Unit,
-  onSendCommand: (String?) -> Unit,
-  onKeyTab: () -> Unit,
-  onKeyCtrlC: () -> Unit,
-  onKeyHistoryPrev: () -> Unit,
-  onKeyHistoryNext: () -> Unit,
-  modifier: Modifier = Modifier
-) {
-  val listState = rememberLazyListState()
-  var cursorVisible by remember { mutableStateOf(true) }
-  LaunchedEffect(terminalLines.size) {
-    if (terminalLines.isNotEmpty()) {
-      listState.animateScrollToItem(terminalLines.size - 1)
-    }
-  }
-  LaunchedEffect(Unit) {
-    while (true) {
-      delay(500)
-      cursorVisible = !cursorVisible
-    }
-  }
-
-  Box(
-    modifier = modifier
-      .fillMaxWidth()
-      .background(TerminalBlack)
-      .padding(horizontal = 10.dp, vertical = 8.dp)
-  ) {
-    LazyColumn(
-      state = listState,
-      modifier = Modifier.fillMaxSize(),
-      contentPadding = PaddingValues(vertical = 4.dp)
-    ) {
-      items(terminalLines) { line ->
-        val color = when (line) {
-          is TerminalLine.Error -> TerminalRed
-          is TerminalLine.Command -> TerminalGreen
-          is TerminalLine.System -> TerminalCyan
-          is TerminalLine.Output -> TerminalWhite
+      is DistroManager.DistroState.Downloading -> {
+        Column(modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 10.dp, vertical = 6.dp)
+        ) {
+          Text(
+            text = if (distroState.percent >= 0) {
+              "Downloading distro… ${distroState.percent}%  (${distroState.downloadedMb} / ${distroState.totalMb} MB)"
+            } else {
+              "Downloading distro… ${distroState.downloadedMb} MB"
+            },
+            color = TerminalYellow,
+            fontSize = 10.sp,
+            fontFamily = TerminalFontFamily
+          )
+          Spacer(modifier = Modifier.height(4.dp))
+          LinearProgressIndicator(
+            progress = {
+              if (distroState.percent >= 0) distroState.percent / 100f else 0f
+            },
+            modifier = Modifier.fillMaxWidth().height(4.dp),
+            color = PrimaryCyan,
+            trackColor = CyberBorder
+          )
         }
+      }
+
+      is DistroManager.DistroState.Verifying -> {
         Text(
-          text = line.text,
-          color = color,
+          text = "Verifying checksum… (${distroState.downloadedMb} MB image)",
+          color = TerminalYellow,
+          fontSize = 10.sp,
           fontFamily = TerminalFontFamily,
-          fontSize = fontSizeSp.sp,
-          lineHeight = (fontSizeSp + 4).sp
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp)
         )
       }
-      item {
-        Row {
+
+      is DistroManager.DistroState.Installed -> {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
           Text(
-            text = activePrompt,
+            text = "Distro ready (${String.format("%.1f", distroState.sizeGb)} GB, persistent) — node • go • pi • opencode",
             color = TerminalGreen,
+            fontSize = 10.sp,
             fontFamily = TerminalFontFamily,
-            fontSize = fontSizeSp.sp
+            modifier = Modifier.weight(1f)
           )
-          Text(
-            text = terminalInput + if (cursorVisible) "█" else " ",
-            color = TerminalWhite,
-            fontFamily = TerminalFontFamily,
-            fontSize = fontSizeSp.sp
-          )
+          if (vmStatus == VmState.STOPPED || vmStatus == VmState.ERROR) {
+            IconButton(
+              onClick = onUninstallDistro,
+              modifier = Modifier.size(28.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = "Uninstall distro",
+                tint = TerminalDimText,
+                modifier = Modifier.size(15.dp)
+              )
+            }
+          }
         }
       }
-    }
-  }
-}
 
-@Composable
-private fun TouchAccessoryBar(
-  terminalInput: String,
-  onInputChange: (String) -> Unit,
-  onKeyTab: () -> Unit,
-  onKeyCtrlC: () -> Unit,
-  onKeyHistoryPrev: () -> Unit,
-  onKeyHistoryNext: () -> Unit,
-  onInsertText: (String) -> Unit,
-  onSendCommand: (String?) -> Unit
-) {
-  Column(
-    modifier = Modifier
-      .fillMaxWidth()
-      .background(CyberSurface)
-      .navigationBarsPadding()
-      .imePadding()
-  ) {
-    // Quick Insert Keys Row
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .horizontalScroll(rememberScrollState())
-        .padding(horizontal = 6.dp, vertical = 4.dp),
-      horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-      TouchKey(label = "TAB", onClick = onKeyTab)
-      TouchKey(label = "↑", onClick = onKeyHistoryPrev)
-      TouchKey(label = "↓", onClick = onKeyHistoryNext)
-      TouchKey(label = "/", onClick = { onInsertText("/") })
-      TouchKey(label = "-", onClick = { onInsertText("-") })
-      TouchKey(label = "_", onClick = { onInsertText("_") })
-      TouchKey(label = "|", onClick = { onInsertText("| ") })
-      TouchKey(label = ">", onClick = { onInsertText("> ") })
-      TouchKey(label = "&", onClick = { onInsertText("&") })
-      TouchKey(label = "~", onClick = { onInsertText("~") })
-      TouchKey(label = "Ctrl+C", isRed = true, onClick = onKeyCtrlC)
-    }
-
-    // Command Input Row
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(horizontal = 8.dp, vertical = 6.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      OutlinedTextField(
-        value = terminalInput,
-        onValueChange = { newText -> onInputChange(newText) },
-        modifier = Modifier.weight(1f),
-        placeholder = {
+      is DistroManager.DistroState.Failed -> {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
           Text(
-            "Enter command...",
-            color = TerminalDimText,
+            text = "Distro install failed: ${distroState.error}",
+            color = TerminalRed,
+            fontSize = 10.sp,
             fontFamily = TerminalFontFamily,
-            fontSize = 12.sp
+            modifier = Modifier.weight(1f)
           )
-        },
-        textStyle = TextStyle(
+          Spacer(modifier = Modifier.width(8.dp))
+          Button(
+            onClick = onInstallDistro,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = TerminalYellow,
+              contentColor = TerminalBlack
+            ),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.height(28.dp)
+          ) {
+            Text("Retry", fontWeight = FontWeight.Bold, fontSize = 10.sp)
+          }
+        }
+      }
+
+      is DistroManager.DistroState.Uninstalling -> {
+        Text(
+          text = "Removing distro…",
+          color = TerminalDimText,
+          fontSize = 10.sp,
           fontFamily = TerminalFontFamily,
-          fontSize = 13.sp,
-          color = TerminalWhite
-        ),
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-        keyboardActions = KeyboardActions(
-          onSend = { onSendCommand(null) }
-        ),
-        colors = OutlinedTextFieldDefaults.colors(
-          focusedBorderColor = PrimaryCyan,
-          unfocusedBorderColor = CyberBorder,
-          focusedContainerColor = TerminalBlack,
-          unfocusedContainerColor = TerminalBlack
-        ),
-        shape = RoundedCornerShape(8.dp)
-      )
-
-      Spacer(modifier = Modifier.width(6.dp))
-
-      Button(
-        onClick = { onSendCommand(null) },
-        colors = ButtonDefaults.buttonColors(
-          containerColor = SecondaryEmerald,
-          contentColor = TerminalBlack
-        ),
-        shape = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
-      ) {
-        Icon(
-          imageVector = Icons.AutoMirrored.Filled.Send,
-          contentDescription = "Execute",
-          modifier = Modifier.size(18.dp)
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp)
         )
       }
     }
-  }
-}
-
-@Composable
-private fun TouchKey(
-  label: String,
-  isRed: Boolean = false,
-  onClick: () -> Unit
-) {
-  val bgColor = if (isRed) TerminalRed.copy(alpha = 0.25f) else CyberSurfaceVariant
-  val textColor = if (isRed) TerminalRed else TerminalWhite
-
-  Box(
-    modifier = Modifier
-      .clip(RoundedCornerShape(4.dp))
-      .background(bgColor)
-      .border(1.dp, CyberBorder, RoundedCornerShape(4.dp))
-      .clickable(onClick = onClick)
-      .padding(horizontal = 7.dp, vertical = 5.dp),
-    contentAlignment = Alignment.Center
-  ) {
-    Text(
-      text = label,
-      color = textColor,
-      fontSize = 11.sp,
-      fontWeight = FontWeight.Bold,
-      fontFamily = TerminalFontFamily
-    )
   }
 }
