@@ -52,13 +52,8 @@ class QemuEngineTest {
   /** Create a fake installed distro (image + kernel + initramfs). */
   private fun installFakeDistro(context: Context): File {
     val distroDir = File(context.filesDir, "qemu/distro").apply { mkdirs() }
-    File(distroDir, "rootfs.img").apply {
-      writeByteArray(ByteArray(1024) { 0 })
-      // Size above QemuEngine's plausibility threshold
-      val filler = RandomAccessFile(this, "rw")
-      filler.setLength(128L * 1024L * 1024L)
-      filler.close()
-    }
+    // Sparse 128 MB image: above QemuEngine's plausibility threshold.
+    RandomAccessFile(File(distroDir, "rootfs.img"), "rw").use { it.setLength(128L * 1024L * 1024L) }
     File(distroDir, "vmlinuz-lts").writeText("distro-kernel")
     File(distroDir, "initramfs-lts").writeText("distro-initrd")
     return distroDir
